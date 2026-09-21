@@ -106,13 +106,16 @@
       </select>
     </div>
     <div class="row">
-      <label for="photoMaxInput">写真 API で最大解像度を要求
-        <span class="hint">端末によってはカメラ接続ごと落ちます（既定は要求しない）。</span>
+      <label>カメラの許可
+        <span class="hint" id="permissionInfo">—</span>
+        <span class="hint">
+          毎回聞かれる場合は、設定 → アプリ → Safari → カメラ を「許可」にすると
+          出なくなることがあります（全サイトに許可が下りる点に注意）。
+        </span>
       </label>
-      <input type="checkbox" id="photoMaxInput">
     </div>
     <div class="row">
-      <label for="qualityInput">画質（JPEG / HEIC）</label>
+      <label for="qualityInput">画質（JPEG）</label>
       <span><input type="range" id="qualityInput" min="0.7" max="1" step="0.01" value="0.95"> <span id="qualityValue">0.95</span></span>
     </div>
     <div class="row">

@@ -12,6 +12,7 @@ import { isPhotoModeAvailable, takePhotoBlob, isTrackAlive } from './capture/pho
 import {
   canvasToBlob, saveImage, timestampName, probeEncoders, EXTENSION_OF_TYPE,
 } from './encode.js';
+import { inspectCameraPermission } from './permission.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -56,10 +57,10 @@ const state = {
     grid: false,
     highFps: false,
     format: 'image/jpeg',
-    photoMaxSize: false,
   },
   encoders: null,
   probe: null,
+  permission: null,
 };
 
 function loadSettings() {
@@ -135,6 +136,7 @@ async function startCamera() {
     el.deviceInfo.textContent = describeDevice(info);
     el.shutter.disabled = false;
     el.start.classList.add('hidden');
+    updatePermissionInfo();
     requestWakeLock();
   } catch (err) {
     handleCameraError(err);
@@ -146,6 +148,56 @@ function stopCamera() {
   state.stream = null;
   state.track = null;
   el.shutter.disabled = true;
+}
+
+/** トラックが生きているか。死んでいれば開き直しが要る。 */
+function isStreamAlive() {
+  return state.track?.readyState === 'live';
+}
+
+/** 起動時に調べた許可の状態を設定シートに出す。 */
+function updatePermissionInfo() {
+  const info = $('permissionInfo');
+  if (!info) return;
+  const p = state.permission;
+  if (!p) {
+    info.textContent = '起動時の判定: 未取得';
+    return;
+  }
+  const source = {
+    'permissions-api': 'Permissions API',
+    'device-labels': 'デバイス名が見えている',
+    denied: '拒否されている',
+    unknown: '判定できない',
+  }[p.reason] ?? p.reason;
+  info.textContent = p.granted
+    ? `起動時の判定: 前回の許可が残っていた（${source}）`
+    : `起動時の判定: 許可は残っていなかった（${source}）`;
+}
+
+/**
+ * 解像度を変える。まず applyConstraints で試し、駄目なときだけ開き直す。
+ * ストリームを作り直さなければ、許可の再取得も起きない。
+ */
+async function changeResolution() {
+  if (!isStreamAlive() || state.settings.resolution === 'auto') {
+    await startCamera();
+    return;
+  }
+  const [width, height] = state.settings.resolution.split('x').map(Number);
+  try {
+    await state.track.applyConstraints({ width: { ideal: width }, height: { ideal: height } });
+    const info = inspectTrack(state.track);
+    // iOS は縦横を入れ替えて返すので、画素数で近さを判定する
+    const wanted = width * height;
+    const got = info.width * info.height;
+    if (Math.abs(got - wanted) / wanted > 0.25) throw new Error('要求に届きませんでした');
+    setStatus(`${info.width}×${info.height}`, modeLabel());
+    el.deviceInfo.textContent = describeDevice(info);
+    toast(`${info.width}×${info.height} に変更しました`);
+  } catch {
+    await startCamera();
+  }
 }
 
 function handleCameraError(err) {
@@ -321,7 +373,10 @@ async function shootPhotoApi() {
       + '手元の iPhone（iOS 18.7）では無音でしたが、WebKit 側に音を止める処理は無く、'
       + '機種や iOS の版によっては鳴る可能性があります。\n'
       + '初めて使うときは、音量を上げた状態で一度試してください。\n\n'
-      + '撮影には 1 秒ほどかかります。続けますか？',
+      + '・解像度は映像と同じ（高解像にはならない）\n'
+      + '・撮影に 0.3〜1.4 秒かかる\n'
+      + '・モードに入って 1 枚目は焦点や露出が甘いことがある\n\n'
+      + '続けますか？',
     );
     if (!ok) return;
     state.photoWarned = true;
@@ -329,9 +384,9 @@ async function shootPhotoApi() {
   setBusy(true, '撮影中…');
   const started = performance.now();
   try {
-    const { blob, width, height } = await takePhotoBlob(state.track, {
-      maxSize: state.settings.photoMaxSize,
-    });
+    // サイズは要求しない。実測では要求しても映像と同じ大きさに丸められ、
+    // 能力値の最大を要求したときだけカメラ接続が落ちた。
+    const { blob, width, height } = await takePhotoBlob(state.track);
     setBusy(false);
     showResult(blob, `${width}×${height}・単写（写真API）・${Math.round(performance.now() - started)}ms`);
   } catch (err) {
@@ -388,12 +443,17 @@ async function requestWakeLock() {
   } catch { /* 取れなくても支障はない */ }
 }
 
+// バックグラウンドに回ってもストリームは止めない。
+// 止めて取り直すと getUserMedia をもう一度呼ぶことになり、許可を聞かれる場合があるため。
+// iOS 側がトラックを終了させたときだけ開き直す。
 document.addEventListener('visibilitychange', async () => {
-  if (document.visibilityState === 'hidden') {
-    stopCamera();
-  } else if (!state.stream && el.start.classList.contains('hidden')) {
-    // 復帰時にカメラを開き直す（iOS はバックグラウンドでトラックを止める）
+  if (document.visibilityState !== 'visible') return;
+  if (el.start.classList.contains('hidden') && !isStreamAlive()) {
     await startCamera();
+  } else if (isStreamAlive()) {
+    // 復帰直後に映像が止まって見えることがあるので、再生だけ促す
+    el.video.play().catch(() => {});
+    requestWakeLock();
   }
 });
 
@@ -439,7 +499,6 @@ function bindSettings() {
   const drizzle = $('drizzleInput');
   const resolution = $('resolutionSelect');
   const highFps = $('highFpsInput');
-  const photoMax = $('photoMaxInput');
   const format = $('formatSelect');
 
   frames.value = state.settings.frames;
@@ -448,7 +507,6 @@ function bindSettings() {
   drizzle.checked = state.settings.drizzle;
   resolution.value = state.settings.resolution;
   highFps.checked = state.settings.highFps;
-  photoMax.checked = state.settings.photoMaxSize;
   format.value = state.settings.format;
   $('framesValue').textContent = state.settings.frames;
   $('sharpenValue').textContent = state.settings.sharpen;
@@ -478,19 +536,13 @@ function bindSettings() {
   resolution.addEventListener('change', async () => {
     state.settings.resolution = resolution.value;
     saveSettings();
-    await startCamera();
+    // ストリームを作り直すと許可を聞かれることがあるので、まず制約の適用で済ませる
+    await changeResolution();
   });
 
   highFps.addEventListener('change', () => {
     state.settings.highFps = highFps.checked;
     saveSettings();
-  });
-  photoMax.addEventListener('change', () => {
-    state.settings.photoMaxSize = photoMax.checked;
-    saveSettings();
-    if (photoMax.checked) {
-      toast('端末によってはカメラ接続ごと落ちます。落ちたら自動で開き直します', 3500);
-    }
   });
   format.addEventListener('change', () => {
     state.settings.format = format.value;
@@ -508,7 +560,13 @@ function bindSettings() {
     if (!result.applied) toast('この端末ではライトを制御できません');
   });
   $('diagLink').addEventListener('click', () => {
-    window.location.href = './diag.html';
+    // 別ページへ移ると文書が変わり、戻ったときに許可を取り直しになることがある
+    const ok = window.confirm(
+      '診断ページへ移動します。\n'
+      + 'アプリから離れるため、戻ったときにカメラの許可をもう一度聞かれる場合があります。\n\n'
+      + '移動しますか？',
+    );
+    if (ok) window.location.href = './diag.html';
   });
 }
 
@@ -545,14 +603,38 @@ function registerServiceWorker() {
   });
 }
 
+/**
+ * 起動処理。
+ * 許可が残っているなら開始ボタンを待たずにカメラを開く（タップ 1 回ぶん省ける）。
+ * 判定は getUserMedia を呼ばずに行うので、これ自体でプロンプトは出ない。
+ */
+async function boot() {
+  if (!navigator.mediaDevices?.getUserMedia) {
+    el.startNote.textContent = 'この環境ではカメラ API が使えません。HTTPS で開いているか確認してください。';
+    $('startBtn').disabled = true;
+    return;
+  }
+
+  const permission = await inspectCameraPermission();
+  state.permission = permission;
+
+  if (permission.granted) {
+    el.startNote.textContent = '前回の許可が残っています。カメラを開いています…';
+    await startCamera();
+    return;
+  }
+  if (permission.permissionState === 'denied') {
+    el.startNote.textContent = 'カメラが拒否されています。'
+      + '設定 → アプリ → Safari → カメラ を「許可」または「確認」に戻してください。';
+    return;
+  }
+  el.startNote.textContent = '';
+}
+
 loadSettings();
 bindSettings();
 bindUi();
 setMode('single');
 registerServiceWorker();
 populateFormats();
-
-if (!navigator.mediaDevices?.getUserMedia) {
-  el.startNote.textContent = 'この環境ではカメラ API が使えません。HTTPS で開いているか確認してください。';
-  $('startBtn').disabled = true;
-}
+boot();

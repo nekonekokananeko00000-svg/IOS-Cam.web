@@ -29,13 +29,16 @@ export async function getPhotoCapabilities(track) {
 /**
  * 写真パイプラインで 1 枚撮る。
  *
- * maxSize を true にすると能力値の最大（実機では 4032×3024）を要求するが、
- * 映像セッションが小さいときにこれを要求すると WebKit のキャプチャ側が
- * `IPC Connection closed` で落ちることがある。そのため既定は要求しない。
+ * サイズは既定では要求しない。実機で測ったところ、
+ *   - 映像の ×1.5 や ×2 を要求しても、映像と同じ大きさに丸められる
+ *   - 能力値の最大（4032×3024。映像と縦横比が違う）を要求したときだけ
+ *     `IPC Connection closed` でキャプチャ接続が落ちる
+ * となり、要求して得られるものが無かった。
+ * size は診断ページの上限探索でだけ使う。
  *
  * @returns {Promise<{blob: Blob, width:number, height:number, requested:object}>}
  */
-export async function takePhotoBlob(track, { maxSize = false, size = null } = {}) {
+export async function takePhotoBlob(track, { size = null } = {}) {
   if (!isPhotoModeAvailable()) throw new Error('この端末は高画質モードに対応していません');
   const ic = new ImageCapture(track);
 
@@ -43,14 +46,6 @@ export async function takePhotoBlob(track, { maxSize = false, size = null } = {}
   if (size) {
     settings.imageWidth = size.width;
     settings.imageHeight = size.height;
-  } else if (maxSize) {
-    try {
-      const caps = await ic.getPhotoCapabilities();
-      if (caps?.imageWidth?.max) settings.imageWidth = caps.imageWidth.max;
-      if (caps?.imageHeight?.max) settings.imageHeight = caps.imageHeight.max;
-    } catch {
-      // 能力が取れない端末ではそのまま既定値で撮る
-    }
   }
 
   const blob = Object.keys(settings).length > 0

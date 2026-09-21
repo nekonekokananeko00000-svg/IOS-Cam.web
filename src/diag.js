@@ -10,6 +10,7 @@ import { onEachFrame, sharpnessScore } from './capture/burst.js';
 import { isPhotoModeAvailable, takePhotoBlob, getPhotoCapabilities, isTrackAlive } from './capture/photo.js';
 import { isGpuStackSupported, GpuStacker } from './pipeline/merge.js';
 import { probeEncoders, canvasToBlob } from './encode.js';
+import { inspectCameraPermission } from './permission.js';
 
 const $ = (id) => document.getElementById(id);
 const video = $('video');
@@ -59,6 +60,30 @@ function table(rows, columns) {
   };
   show('envOut', report.environment);
 }());
+
+// ---- 0b. 許可の持続 ----
+// getUserMedia を呼ぶ前に判定する。ここで「残っていた」と出れば、
+// アプリ側は開始ボタンを待たずにカメラを開いてよい。
+async function checkPermission(label = 'ページを開いた直後') {
+  const result = await inspectCameraPermission();
+  const entry = {
+    when: label,
+    granted: result.granted,
+    permissionsApi: result.permissionState ?? '（Safari は camera を知らない）',
+    deviceLabelsVisible: result.labels,
+    videoInputs: result.videoInputs,
+    judgedBy: result.reason,
+  };
+  report.permission = report.permission ?? [];
+  report.permission.push(entry);
+  show('permOut', {
+    判定: result.granted ? '前回の許可が残っていた' : '許可は残っていなかった',
+    ...entry,
+  });
+  return result;
+}
+checkPermission();
+$('permBtn').addEventListener('click', () => checkPermission('ボタンで再判定'));
 
 // ---- 1. カメラを開く ----
 async function open(facingMode) {
@@ -216,8 +241,16 @@ async function runTakePhoto(maxSize) {
   $('photoMaxBtn').disabled = true;
   const t0 = performance.now();
   const settings = track.getSettings();
+  // 最大解像度の要求は、能力値から組み立てて明示的に渡す
+  let requestedSize = null;
+  if (maxSize) {
+    const caps = await getPhotoCapabilities(track);
+    if (caps?.imageWidth?.max) {
+      requestedSize = { width: caps.imageWidth.max, height: caps.imageHeight.max };
+    }
+  }
   try {
-    const { blob, width, height, requested } = await takePhotoBlob(track, { maxSize });
+    const { blob, width, height, requested } = await takePhotoBlob(track, { size: requestedSize });
     report[key] = {
       supported: true,
       maxSizeRequested: maxSize,

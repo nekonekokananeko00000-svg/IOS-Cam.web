@@ -78,8 +78,17 @@ const shotInfo = () => page.evaluate(() => ({
 
 
 await page.goto(`${BASE}/index.html`);
-await page.click('#startBtn');
-await page.waitForFunction(() => !document.getElementById('shutter').disabled, null, { timeout: 15000 });
+
+// 許可が残っていれば開始ボタンを押さずにカメラが開くはず（プロンプト削減の要）
+const autoStarted = await page
+  .waitForFunction(() => !document.getElementById('shutter').disabled, null, { timeout: 8000 })
+  .then(() => true)
+  .catch(() => false);
+check('許可済みなら自動でカメラが開く', autoStarted);
+if (!autoStarted) {
+  await page.click('#startBtn');
+  await page.waitForFunction(() => !document.getElementById('shutter').disabled, null, { timeout: 15000 });
+}
 
 check('カメラが起動し解像度が表示される', /\d+×\d+/.test(await page.textContent('#statusChip')));
 check('スタート画面が隠れる', await page.locator('#start').evaluate((e) => e.classList.contains('hidden')));
