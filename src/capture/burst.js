@@ -1,10 +1,9 @@
 // 連写まわり。
 //
-// 方針: 全フレームをメモリに溜めない。1920x1080 の RGBA は 1枚 8MB を超えるので、
-// 30枚保持すると iOS Safari では簡単に落ちる。そのため
-//   - 直前フレームの保持は「シャッターラグ 0」用の数枚だけ（リングバッファ）
-//   - 合成用のフレームは取得しながら逐次 GPU に流し込む（ストリーミング加算）
-// という構成にしている。
+// 方針: フレームを溜め込まない。4K の ImageBitmap は 1 枚で 8MP（RGBA なら 33MB）を確保するため、
+// 実機では 12 枚の撮影に 3.8 秒かかっていた。撮影に時間がかかるほど手ぶれが累積し、
+// 位置合わせで弾かれる枚数も増える。
+// そこで ImageBitmap を作らず、video 要素をそのまま GPU / canvas へ渡し、逐次累積する。
 
 /** video 要素の新フレームごとにコールバックする（rVFC が無ければ rAF で代用）。 */
 export function onEachFrame(videoEl, callback) {
@@ -28,56 +27,33 @@ export function onEachFrame(videoEl, callback) {
 }
 
 /**
- * 直近 N フレームを保持するリングバッファ。
- * シャッターを押した「瞬間より前」のフレームも候補にできる。
+ * これから来る count 枚を順に処理する。
+ * onFrame には video 要素をそのまま渡す（コピーを作らない）。
+ * onFrame は次のフレームが来る前に処理し終える必要があるため、重い処理は避けること。
  */
-export class FrameRing {
-  constructor(capacity = 6) {
-    this.capacity = capacity;
-    this.items = [];
-  }
-
-  push(bitmap, meta = {}) {
-    this.items.push({ bitmap, meta, t: performance.now() });
-    while (this.items.length > this.capacity) {
-      const old = this.items.shift();
-      old.bitmap.close?.();
-    }
-  }
-
-  toArray() {
-    return this.items.slice();
-  }
-
-  clear() {
-    for (const item of this.items) item.bitmap.close?.();
-    this.items = [];
-  }
-}
-
-/**
- * これから来る count 枚を順に受け取る。
- * onFrame は同期的に処理し終える前提（戻り値が Promise なら待つ）。
- */
-export async function collectFrames(videoEl, count, onFrame, { timeoutMs = 8000 } = {}) {
+export async function collectFrames(videoEl, count, onFrame, { timeoutMs = 15000 } = {}) {
   let received = 0;
+  let busy = false;
   const started = performance.now();
   return new Promise((resolve, reject) => {
     const stop = onEachFrame(videoEl, async (now, metadata) => {
+      if (busy) return; // 処理中に来たフレームは捨てる（溜めると破綻する）
       if (performance.now() - started > timeoutMs) {
         stop();
-        reject(new Error('連写がタイムアウトしました'));
+        if (received > 0) resolve(received);
+        else reject(new Error('連写がタイムアウトしました'));
         return;
       }
+      busy = true;
       try {
-        const bitmap = await createImageBitmap(videoEl);
         received += 1;
-        await onFrame(bitmap, received, metadata);
-        bitmap.close?.();
+        await onFrame(videoEl, received, metadata);
       } catch (err) {
         stop();
         reject(err);
         return;
+      } finally {
+        busy = false;
       }
       if (received >= count) {
         stop();

@@ -84,8 +84,10 @@ vec3 sampleBicubic(sampler2D tex, vec2 coord) {
 void main() {
   vec4 prev = texelFetch(uAccum, ivec2(gl_FragCoord.xy), 0);
 
-  // 出力画素の中心を、ソース画素座標に写す
-  vec2 outCoord = gl_FragCoord.xy;
+  // gl_FragCoord は下原点、テクスチャは上原点（= 画像の並びそのまま）。
+  // ImageBitmap ソースでは UNPACK_FLIP_Y_WEBGL が仕様上無視されるため、
+  // flip に頼らずここで画像座標系へ変換する。入力が canvas でも video でも同じ結果になる。
+  vec2 outCoord = vec2(gl_FragCoord.x, float(uOutSize.y) - gl_FragCoord.y);
   vec2 scale = vec2(uSrcSize) / vec2(uOutSize);
   vec2 srcCoord = outCoord * scale + uShift;
 
@@ -297,11 +299,12 @@ export class GpuStacker {
     }
   }
 
-  _upload(tex, bitmap) {
+  _upload(tex, source) {
     const gl = this.gl;
     gl.bindTexture(gl.TEXTURE_2D, tex);
-    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, bitmap);
+    // flip はシェーダ側で行う（ImageBitmap には効かないため）
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
@@ -310,13 +313,13 @@ export class GpuStacker {
 
   /**
    * フレームを 1 枚足す。
-   * @param {ImageBitmap|HTMLCanvasElement} bitmap
+   * @param {ImageBitmap|HTMLCanvasElement|HTMLVideoElement} source
    * @param {{dx:number, dy:number, weight:number, isReference:boolean}} options
    */
-  addFrame(bitmap, { dx = 0, dy = 0, weight = 1, isReference = false } = {}) {
+  addFrame(source, { dx = 0, dy = 0, weight = 1, isReference = false } = {}) {
     const gl = this.gl;
-    this._upload(this.srcTex, bitmap);
-    if (isReference || this.frameCount === 0) this._upload(this.refTex, bitmap);
+    this._upload(this.srcTex, source);
+    if (isReference || this.frameCount === 0) this._upload(this.refTex, source);
 
     const dst = 1 - this.current;
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbo[dst]);
@@ -337,8 +340,8 @@ export class GpuStacker {
     gl.uniform1i(gl.getUniformLocation(p, 'uAccum'), 2);
     gl.uniform2i(gl.getUniformLocation(p, 'uSrcSize'), this.srcWidth, this.srcHeight);
     gl.uniform2i(gl.getUniformLocation(p, 'uOutSize'), this.outWidth, this.outHeight);
-    // シェーダ内は左下原点。縦のずれは符号を反転して渡す。
-    gl.uniform2f(gl.getUniformLocation(p, 'uShift'), dx, -dy);
+    // シェーダ側で画像座標系に揃えているので、ずれはそのまま渡す
+    gl.uniform2f(gl.getUniformLocation(p, 'uShift'), dx, dy);
     gl.uniform1f(gl.getUniformLocation(p, 'uWeight'), weight);
     gl.uniform1f(gl.getUniformLocation(p, 'uNoise'), this.noise);
     gl.uniform1i(gl.getUniformLocation(p, 'uBicubic'), this.bicubic ? 1 : 0);

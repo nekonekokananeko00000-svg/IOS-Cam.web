@@ -5,6 +5,11 @@
 // （AVCapturePhotoOutput.isShutterSoundSuppressionSupported が false）ため、
 // 撮影時に音が鳴る可能性が高い。既定では使わず、ユーザーが明示的に選んだときだけ使う。
 
+/** トラックが生きているか（IPC 切断後は ended になる）。 */
+export function isTrackAlive(track) {
+  return !!track && track.readyState === 'live';
+}
+
 export function isPhotoModeAvailable() {
   return typeof ImageCapture !== 'undefined'
     && typeof ImageCapture.prototype.takePhoto === 'function';
@@ -22,10 +27,15 @@ export async function getPhotoCapabilities(track) {
 }
 
 /**
- * 写真パイプラインで 1 枚撮る。可能なら最大解像度を要求する。
+ * 写真パイプラインで 1 枚撮る。
+ *
+ * maxSize を true にすると能力値の最大（実機では 4032×3024）を要求するが、
+ * 映像セッションが小さいときにこれを要求すると WebKit のキャプチャ側が
+ * `IPC Connection closed` で落ちることがある。そのため既定は要求しない。
+ *
  * @returns {Promise<{blob: Blob, width:number, height:number, requested:object}>}
  */
-export async function takePhotoBlob(track, { maxSize = true } = {}) {
+export async function takePhotoBlob(track, { maxSize = false } = {}) {
   if (!isPhotoModeAvailable()) throw new Error('この端末は高画質モードに対応していません');
   const ic = new ImageCapture(track);
 
@@ -41,7 +51,7 @@ export async function takePhotoBlob(track, { maxSize = true } = {}) {
   }
 
   const blob = Object.keys(settings).length > 0
-    ? await ic.takePhoto(settings).catch(() => ic.takePhoto())
+    ? await ic.takePhoto(settings)
     : await ic.takePhoto();
 
   const bitmap = await createImageBitmap(blob);

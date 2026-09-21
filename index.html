@@ -31,6 +31,7 @@
   </div>
 
   <div class="bottombar">
+    <div class="zooms" id="zooms" role="group" aria-label="ズーム" hidden></div>
     <div class="modes" role="group" aria-label="撮影モード">
       <button class="mode" id="modeSingle" aria-pressed="true">静音・1枚</button>
       <button class="mode" id="modeStack" aria-pressed="false">静音・高画質</button>
@@ -76,10 +77,10 @@
       </label>
       <select id="resolutionSelect">
         <option value="auto">自動（最大）</option>
-        <option value="3840x2160">3840 × 2160</option>
-        <option value="1920x1440">1920 × 1440</option>
-        <option value="1920x1080">1920 × 1080</option>
-        <option value="1280x720">1280 × 720</option>
+        <option value="3840x2160">4K 相当（約 830 万画素）</option>
+        <option value="1920x1440">約 280 万画素</option>
+        <option value="1920x1080">フル HD 相当（約 210 万画素）</option>
+        <option value="1280x720">HD 相当（約 92 万画素）</option>
       </select>
     </div>
     <div class="row" id="zoomRow" hidden>
@@ -91,7 +92,27 @@
       <input type="checkbox" id="torchInput">
     </div>
     <div class="row">
-      <label for="qualityInput">JPEG 品質</label>
+      <label for="highFpsInput">合成中は 60fps を要求
+        <span class="hint">撮影時間が縮み、手ぶれの累積が減る。対応端末のみ。</span>
+      </label>
+      <input type="checkbox" id="highFpsInput">
+    </div>
+    <div class="row">
+      <label for="formatSelect">保存形式
+        <span class="hint">端末が本当に符号化できる形式だけを出します。</span>
+      </label>
+      <select id="formatSelect">
+        <option value="image/jpeg">JPEG</option>
+      </select>
+    </div>
+    <div class="row">
+      <label for="photoMaxInput">写真 API で最大解像度を要求
+        <span class="hint">端末によってはカメラ接続ごと落ちます（既定は要求しない）。</span>
+      </label>
+      <input type="checkbox" id="photoMaxInput">
+    </div>
+    <div class="row">
+      <label for="qualityInput">画質（JPEG / HEIC）</label>
       <span><input type="range" id="qualityInput" min="0.7" max="1" step="0.01" value="0.95"> <span id="qualityValue">0.95</span></span>
     </div>
     <div class="row">

@@ -6,6 +6,9 @@
 // これは Safari ではなく Chromium での検証なので、iOS 固有の挙動（解像度・音・許可）は
 // diag.html を実機で動かして確認すること。ここで守りたいのは、撮影から書き出しまでの
 // 配線と、GPU シェーダが CPU 実装と一致していることの 2 点。
+//
+// 上下反転の回帰は diag の自己テスト（ImageBitmap 入力）が担当する。実撮影どうしを
+// 見比べる方法も試したが、偽カメラの絵が上下に対称的で反転を検出できなかったため採らない。
 
 import http from 'node:http';
 import fs from 'node:fs';
@@ -72,6 +75,7 @@ const shotInfo = () => page.evaluate(() => ({
   h: document.getElementById('shot').naturalHeight,
   meta: document.getElementById('shotMeta').textContent,
 }));
+
 
 await page.goto(`${BASE}/index.html`);
 await page.click('#startBtn');
@@ -163,8 +167,13 @@ log(JSON.stringify({ framePaths: report.framePaths, gpu: report.gpu, selfTest: r
 check('フレーム取得経路を計測できた', Array.isArray(report.framePaths) && report.framePaths.length === 3);
 check('GPU/CPU 一致テストが実行できた', !!report.selfTest && !report.selfTest.error, JSON.stringify(report.selfTest));
 if (report.selfTest && !report.selfTest.error) {
-  check('GPU シェーダが CPU 実装と一致する（最大差 ≤ 6）', report.selfTest.maxDiff <= 6,
-    `maxDiff=${report.selfTest.maxDiff}`);
+  check('GPU と CPU が一致する（canvas 入力）', report.selfTest.canvasInput?.maxDiff <= 6,
+    JSON.stringify(report.selfTest.canvasInput));
+  // 実撮影と同じ条件。ここが本番（WebGL は ImageBitmap で flipY が効かない）
+  check('GPU と CPU が一致する（ImageBitmap 入力）', report.selfTest.imageBitmapInput?.maxDiff <= 6,
+    JSON.stringify(report.selfTest.imageBitmapInput));
+  check('ImageBitmap 入力で上下が反転していない', report.selfTest.orientationOk === true,
+    JSON.stringify(report.selfTest.imageBitmapInput));
 }
 check('ページエラーが出ていない', errors.length === 0, errors.slice(0, 5).join(' | '));
 

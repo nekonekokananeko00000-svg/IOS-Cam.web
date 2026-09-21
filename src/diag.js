@@ -3,10 +3,13 @@
 import {
   RESOLUTION_LADDER, openStream, stopStream, inspectTrack, attachToVideo,
 } from './camera.js';
-import { grabSilentFrame, detectSilentPaths, resetImageCaptureCache } from './capture/frame.js';
+import {
+  grabSilentFrame, detectSilentPaths, resetImageCaptureCache, matchesOrientation,
+} from './capture/frame.js';
 import { onEachFrame } from './capture/burst.js';
-import { isPhotoModeAvailable, takePhotoBlob, getPhotoCapabilities } from './capture/photo.js';
+import { isPhotoModeAvailable, takePhotoBlob, getPhotoCapabilities, isTrackAlive } from './capture/photo.js';
 import { isGpuStackSupported, GpuStacker } from './pipeline/merge.js';
+import { probeEncoders } from './encode.js';
 
 const $ = (id) => document.getElementById(id);
 const video = $('video');
@@ -137,6 +140,7 @@ $('benchBtn').addEventListener('click', async () => {
     const times = [];
     let size = '';
     let error = '';
+    let oriented = null;
     for (let i = 0; i < 20; i += 1) {
       const t0 = performance.now();
       try {
@@ -144,6 +148,7 @@ $('benchBtn').addEventListener('click', async () => {
         if (frame.path !== path) { error = `${path} 非対応（${frame.path} が使われました）`; frame.bitmap.close?.(); break; }
         times.push(performance.now() - t0);
         size = `${frame.width}×${frame.height}`;
+        oriented = matchesOrientation(frame.width, frame.height, video);
         frame.bitmap.close?.();
       } catch (err) {
         error = String(err?.message ?? err);
@@ -155,12 +160,14 @@ $('benchBtn').addEventListener('click', async () => {
       path,
       size: size || '—',
       median: times.length ? `${times[Math.floor(times.length / 2)].toFixed(1)}ms` : '—',
+      oriented: oriented === null ? '—' : (oriented ? '一致' : '回転'),
       note: error,
     });
     $('benchOut').innerHTML = table(rows, [
       { key: 'path', label: '経路' },
       { key: 'size', label: '解像度' },
       { key: 'median', label: '中央値' },
+      { key: 'oriented', label: '向き' },
       { key: 'note', label: '備考' },
     ]);
   }
@@ -198,19 +205,22 @@ $('fpsBtn').addEventListener('click', async () => {
 });
 
 // ---- 6. 写真 API ----
-$('photoBtn').addEventListener('click', async () => {
+async function runTakePhoto(maxSize) {
+  const key = maxSize ? 'takePhotoMaxSize' : 'takePhoto';
   if (!track) return show('photoOut', '先にカメラを開いてください');
   if (!isPhotoModeAvailable()) {
-    report.takePhoto = { supported: false };
+    report[key] = { supported: false };
     return show('photoOut', 'この Safari は takePhoto に対応していません');
   }
   $('photoBtn').disabled = true;
+  $('photoMaxBtn').disabled = true;
   const t0 = performance.now();
+  const settings = track.getSettings();
   try {
-    const { blob, width, height, requested } = await takePhotoBlob(track);
-    const settings = track.getSettings();
-    report.takePhoto = {
+    const { blob, width, height, requested } = await takePhotoBlob(track, { maxSize });
+    report[key] = {
       supported: true,
+      maxSizeRequested: maxSize,
       photoSize: `${width}×${height}`,
       videoSize: `${settings.width}×${settings.height}`,
       largerThanVideo: width * height > (settings.width ?? 0) * (settings.height ?? 0),
@@ -218,21 +228,34 @@ $('photoBtn').addEventListener('click', async () => {
       bytes: blob.size,
       elapsedMs: Math.round(performance.now() - t0),
       requested,
+      trackAliveAfter: isTrackAlive(track),
       shutterSound: 'unknown',
     };
-    $('photoOut').innerHTML = `<pre>${JSON.stringify(report.takePhoto, null, 2)}</pre>`;
     $('soundAsk').hidden = false;
+    lastPhotoKey = key;
   } catch (err) {
-    report.takePhoto = { supported: true, error: String(err?.message ?? err) };
-    $('photoOut').innerHTML = `<pre>失敗: ${err?.message ?? err}</pre>`;
+    report[key] = {
+      supported: true,
+      maxSizeRequested: maxSize,
+      error: String(err?.message ?? err),
+      trackAliveAfter: isTrackAlive(track),
+      hint: isTrackAlive(track) ? '' : 'トラックが死にました。カメラを開き直してください。',
+    };
   }
+  $('photoOut').innerHTML = `<pre>${JSON.stringify(report[key], null, 2)}</pre>`;
   refreshResult();
   $('photoBtn').disabled = false;
-});
+  $('photoMaxBtn').disabled = false;
+}
+
+let lastPhotoKey = 'takePhoto';
+$('photoBtn').addEventListener('click', () => runTakePhoto(false));
+$('photoMaxBtn').addEventListener('click', () => runTakePhoto(true));
 
 const recordSound = (value) => {
-  if (report.takePhoto) report.takePhoto.shutterSound = value;
-  $('photoOut').innerHTML = `<pre>${JSON.stringify(report.takePhoto, null, 2)}</pre>`;
+  const entry = report[lastPhotoKey];
+  if (entry) entry.shutterSound = value;
+  $('photoOut').innerHTML = `<pre>${JSON.stringify(entry, null, 2)}</pre>`;
   refreshResult();
 };
 $('soundYes').addEventListener('click', () => recordSound('played'));
@@ -281,6 +304,7 @@ $('gpuBtn').addEventListener('click', async () => {
 
 // ---- 8. 書き出し ----
 $('encodeBtn').addEventListener('click', async () => {
+  $('encodeBtn').disabled = true;
   const canvas = document.createElement('canvas');
   canvas.width = 64;
   canvas.height = 64;
@@ -289,18 +313,11 @@ $('encodeBtn').addEventListener('click', async () => {
     const ctx = canvas.getContext('2d', { colorSpace: 'display-p3' });
     p3 = ctx?.getContextAttributes?.().colorSpace === 'display-p3';
   } catch { p3 = false; }
-  const ctx = canvas.getContext('2d');
-  ctx.fillStyle = '#c33';
-  ctx.fillRect(0, 0, 64, 64);
 
-  const types = {};
-  for (const type of ['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/avif']) {
-    // eslint-disable-next-line no-await-in-loop
-    const blob = await new Promise((resolve) => canvas.toBlob(resolve, type, 0.9));
-    types[type] = blob ? blob.type : 'null';
-  }
-  report.encode = { displayP3Canvas: p3, toBlob: types };
+  // blob.type を鵜呑みにせず、マジックバイトと再デコードで実体を確かめる
+  report.encode = { displayP3Canvas: p3, encoders: await probeEncoders() };
   show('encodeOut', report.encode);
+  $('encodeBtn').disabled = false;
 });
 
 // ---- 9. 結果 ----
@@ -360,6 +377,7 @@ function readCanvas(source, width, height) {
 }
 
 $('selfTestBtn').addEventListener('click', async () => {
+  $('selfTestBtn').disabled = true;
   const size = 96;
   const shifts = [
     { dx: 0, dy: 0, isReference: true },
@@ -367,45 +385,68 @@ $('selfTestBtn').addEventListener('click', async () => {
     { dx: -1.5, dy: 0.5 },
     { dx: 0.25, dy: -2 },
   ];
-  // フレーム内容を shifts と逆向きにずらして作る（重ねると一致するはず）
-  const frames = shifts.map((s) => syntheticFrame(size, size, s.dx, s.dy));
+  // 合成器は出力画素 (x,y) に対しソースの (x+dx, y+dy) を引く。
+  // そのため内容を -dx だけずらして作れば、指定シフトで重ねたとき元の絵に戻る。
+  const canvases = shifts.map((s) => syntheticFrame(size, size, -s.dx, -s.dy));
 
-  const result = { size, frames: shifts.length };
-  try {
-    const { CpuStacker } = await import('./pipeline/cpu-merge.js');
+  const { CpuStacker } = await import('./pipeline/cpu-merge.js');
+
+  const runPair = async (sources) => {
     const cpu = new CpuStacker();
     cpu.begin(size, size, { noise: 0.14 });
-    shifts.forEach((s, i) => cpu.addFrame(frames[i], { ...s, weight: 1 }));
+    shifts.forEach((s, i) => cpu.addFrame(sources[i], { ...s, weight: 1 }));
     const cpuBytes = readCanvas(cpu.finish({ sharpen: 0 }), size, size);
     cpu.dispose();
 
     const gpu = new GpuStacker();
     gpu.begin(size, size, { scale: 1, bicubic: false, noise: 0.14 });
-    shifts.forEach((s, i) => gpu.addFrame(frames[i], { ...s, weight: 1 }));
+    shifts.forEach((s, i) => gpu.addFrame(sources[i], { ...s, weight: 1 }));
     const gpuBytes = readCanvas(gpu.finish({ sharpen: 0 }), size, size);
     gpu.dispose();
 
     // 端はサンプル範囲外の扱いが違うので内側だけ比べる
+    const margin = 6;
     let worst = 0;
     let total = 0;
     let count = 0;
-    const margin = 6;
+    let flippedWorst = 0;
     for (let y = margin; y < size - margin; y += 1) {
       for (let x = margin; x < size - margin; x += 1) {
         for (let c = 0; c < 3; c += 1) {
-          const d = Math.abs(cpuBytes[(y * size + x) * 4 + c] - gpuBytes[(y * size + x) * 4 + c]);
+          const cpuValue = cpuBytes[(y * size + x) * 4 + c];
+          const d = Math.abs(cpuValue - gpuBytes[(y * size + x) * 4 + c]);
           worst = Math.max(worst, d);
           total += d;
           count += 1;
+          // 上下反転した場合との差も測り、「たまたま対称で気づけない」状況を避ける
+          const flipped = gpuBytes[((size - 1 - y) * size + x) * 4 + c];
+          flippedWorst = Math.max(flippedWorst, Math.abs(cpuValue - flipped));
         }
       }
     }
-    result.maxDiff = worst;
-    result.meanDiff = +(total / count).toFixed(3);
-    result.verdict = worst <= 6 ? 'ok（一致）' : worst <= 16 ? '許容範囲（精度差）' : 'NG（シェーダを確認）';
+    return {
+      maxDiff: worst,
+      meanDiff: +(total / count).toFixed(3),
+      maxDiffIfFlipped: flippedWorst,
+      verdict: worst <= 6 ? 'ok（一致）' : worst <= 16 ? '許容範囲（精度差）' : 'NG（シェーダを確認）',
+    };
+  };
+
+  const result = { size, frames: shifts.length };
+  try {
+    result.canvasInput = await runPair(canvases);
+    // 実撮影と同じ ImageBitmap 入力でも確かめる。
+    // WebGL は ImageBitmap で UNPACK_FLIP_Y_WEBGL が無視されるため、ここが本番の条件になる。
+    const bitmaps = await Promise.all(canvases.map((c) => createImageBitmap(c)));
+    result.imageBitmapInput = await runPair(bitmaps);
+    bitmaps.forEach((b) => b.close?.());
+
+    result.orientationOk = result.imageBitmapInput.maxDiff <= 6
+      && result.imageBitmapInput.maxDiffIfFlipped > result.imageBitmapInput.maxDiff;
   } catch (err) {
     result.error = String(err?.message ?? err);
   }
   report.selfTest = result;
   show('gpuOut', result);
+  $('selfTestBtn').disabled = false;
 });

@@ -48,6 +48,10 @@ iOS の写真撮影 API（`AVCapturePhotoOutput`）は、日本・韓国向け�
 | 静音・高画質 | 連写 → 位置合わせ → 合成。枚数と 2 倍格子は設定で変更できる |
 | 写真API | `ImageCapture.takePhoto()`。高解像だが**音が鳴る可能性が高い**（確認ダイアログあり） |
 
+設定では合成枚数・2 倍格子・シャープ・解像度・保存形式・画質のほか、
+「合成中は 60fps を要求」「写真 API で最大解像度を要求」を切り替えられる。
+ズーム（0.5×/1×/2×）とライトは、端末が対応していれば自動的に表示される。
+
 ## 診断ページ
 
 `diag.html` は実機の実力を測るためのハーネス。解像度ラダー、トラックの能力、フレーム取得経路の速度、
@@ -68,15 +72,21 @@ GPU シェーダは CPU 実装（`accumulate.js`）と同じ式で書いてあ�
 
 ### 検証済み / 未検証
 
-Chromium（偽カメラ）では、1 枚撮影・合成・2 倍格子・写真 API・診断ページが通ることを
-結合テストで確認済み。GPU シェーダと CPU 実装の出力差は最大 0（完全一致）だった。
+Chromium（偽カメラ）で、1 枚撮影・合成・2 倍格子・写真 API・診断ページが通ることを結合テストで確認済み。
+GPU シェーダは CPU 実装と **canvas 入力でも ImageBitmap 入力でも**一致する（実機でも maxDiff 0）。
 
-一方、**次の点は実機でしか確かめられない**ので `diag.html` で確認し、`docs/FINDINGS.md` に記録する。
+実機（iPhone / iOS 18.7）で分かったことは `docs/FINDINGS.md` にまとめてある。要点だけ挙げると:
 
-- `takePhoto()` で日本版 iPhone のシャッター音が鳴るかどうか（最重要）
-- iOS Safari が実際に返す最大解像度と、`powerEfficientPixelFormat` の効き目
-- `grabFrame` / `VideoFrame` / `drawImage` のどれが速いか（Chromium では `drawImage` が最速だった）
-- ホーム画面起動時のカメラ許可の保持
+- **4K（2160×3840 @30fps）で撮れる**。「iOS Safari は 720p まで」という古い記述は現行では誤り
+- `grabFrame` は遅い（480×640 で 34ms）。`new VideoFrame(video)` は**回転したフレーム**を返す
+- ズームが 0.5–10 で効く（0.5× は超広角）。ライトも使える
+- `takePhoto()` に最大解像度を要求すると `IPC Connection closed` でカメラごと落ちた
+
+**まだ実機で確かめられていないこと**:
+
+- `takePhoto()` が日本版 iPhone でシャッター音を鳴らすか（**最重要**・素の `takePhoto()` で再検証が必要）
+- ホーム画面起動時にカメラ許可が保持されるか
+- `toBlob('image/heic')` が本当に HEIC を符号化しているか（`diag.html` が実体を検査する）
 
 ## 公開（GitHub Pages）
 
@@ -89,7 +99,7 @@ Chromium（偽カメラ）では、1 枚撮影・合成・2 倍格子・写真 A
 index.html                本体（単一ページ。リロードしないので許可を聞かれにくい）
 diag.html                 実機計測ハーネス
 src/camera.js             getUserMedia・解像度ラダー・能力適用
-src/capture/frame.js      無音フレーム取得（grabFrame → VideoFrame → drawImage）
+src/capture/frame.js      無音フレーム取得（経路を実測して選ぶ・回転する経路は弾く）
 src/capture/burst.js      連写・リングバッファ・ブレ評価
 src/capture/photo.js      写真API（音が鳴る可能性のある経路）
 src/pipeline/align.js     ピラミッド＋放物線フィットのサブピクセル位置合わせ
@@ -97,7 +107,7 @@ src/pipeline/accumulate.js 合成の中核（純関数・テスト対象）
 src/pipeline/merge.js     WebGL2 による GPU 合成
 src/pipeline/cpu-merge.js CPU フォールバック
 src/pipeline/stack.js     連写→位置合わせ→合成の司令塔
-src/encode.js             書き出しと共有シート保存
+src/encode.js             書き出し・形式の実体検査・共有シート保存
 ```
 
 ## プライバシー

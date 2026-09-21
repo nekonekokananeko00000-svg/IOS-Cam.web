@@ -4,10 +4,14 @@
 import {
   openStream, openBestStream, stopStream, inspectTrack, attachToVideo, applyIfSupported,
 } from './camera.js';
-import { grabToCanvas, detectSilentPaths, resetImageCaptureCache } from './capture/frame.js';
+import {
+  grabToCanvas, detectSilentPaths, resetImageCaptureCache, probeBestPath, getPreferredPath,
+} from './capture/frame.js';
 import { captureStack } from './pipeline/stack.js';
-import { isPhotoModeAvailable, takePhotoBlob } from './capture/photo.js';
-import { canvasToBlob, saveImage, timestampName } from './encode.js';
+import { isPhotoModeAvailable, takePhotoBlob, isTrackAlive } from './capture/photo.js';
+import {
+  canvasToBlob, saveImage, timestampName, probeEncoders, EXTENSION_OF_TYPE,
+} from './encode.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -50,7 +54,12 @@ const state = {
     resolution: 'auto',
     quality: 0.95,
     grid: false,
+    highFps: false,
+    format: 'image/jpeg',
+    photoMaxSize: false,
   },
+  encoders: null,
+  probe: null,
 };
 
 function loadSettings() {
@@ -119,8 +128,11 @@ async function startCamera() {
     const info = inspectTrack(state.track);
     el.video.classList.toggle('mirrored', info.facingMode === 'user' || state.facingMode === 'user');
     setStatus(`${info.width}×${info.height}`, modeLabel());
-    el.deviceInfo.textContent = describeDevice(info);
     syncCapabilityControls(info.capabilities);
+
+    // どの取得経路が速く、正しい向きを返すかは端末依存なので一度だけ測る
+    state.probe = await probeBestPath(el.video, state.track).catch(() => null);
+    el.deviceInfo.textContent = describeDevice(info);
     el.shutter.disabled = false;
     el.start.classList.add('hidden');
     requestWakeLock();
@@ -154,14 +166,57 @@ function handleCameraError(err) {
 
 function describeDevice(info) {
   const paths = detectSilentPaths();
-  const available = Object.entries(paths).filter(([, ok]) => ok).map(([k]) => k).join(' / ');
-  return `${info.width}×${info.height} @${Math.round(info.frameRate)}fps・経路: ${available}`
+  const available = Object.entries(paths).filter(([, ok]) => ok).map(([k]) => k).join('/');
+  const chosen = getPreferredPath();
+  const timing = state.probe?.results
+    ?.filter((r) => r.usable)
+    .map((r) => `${r.path} ${r.median.toFixed(1)}ms`)
+    .join('・');
+  return `${info.width}×${info.height} @${Math.round(info.frameRate)}fps`
+    + `・経路 ${available}（採用: ${chosen ?? '—'}）`
+    + (timing ? `・${timing}` : '')
     + (isPhotoModeAvailable() ? '・写真API あり' : '・写真API なし');
+}
+
+function syncZoomButtons(caps) {
+  const holder = $('zooms');
+  holder.innerHTML = '';
+  const zoom = caps?.zoom;
+  if (!zoom || typeof zoom.min !== 'number') {
+    holder.hidden = true;
+    return;
+  }
+  const current = state.track?.getSettings?.().zoom ?? 1;
+  const steps = [0.5, 1, 2, 3].filter((v) => v >= zoom.min && v <= (zoom.max ?? v));
+  if (steps.length < 2) {
+    holder.hidden = true;
+    return;
+  }
+  holder.hidden = false;
+  for (const value of steps) {
+    const button = document.createElement('button');
+    button.textContent = `${value}×`;
+    button.setAttribute('aria-pressed', String(Math.abs(current - value) < 0.05));
+    button.addEventListener('click', async () => {
+      const result = await applyIfSupported(state.track, { zoom: value });
+      if (!result.applied) {
+        toast('この端末ではズームを変えられません');
+        return;
+      }
+      for (const other of holder.children) other.setAttribute('aria-pressed', 'false');
+      button.setAttribute('aria-pressed', 'true');
+      const slider = $('zoomInput');
+      slider.value = value;
+      $('zoomValue').textContent = `${value.toFixed(1)}×`;
+    });
+    holder.appendChild(button);
+  }
 }
 
 function syncCapabilityControls(caps) {
   const zoomRow = $('zoomRow');
   const torchRow = $('torchRow');
+  syncZoomButtons(caps);
   if (caps?.zoom && typeof caps.zoom.min === 'number') {
     zoomRow.hidden = false;
     const input = $('zoomInput');
@@ -209,7 +264,10 @@ async function shootSingle() {
   setBusy(true);
   const started = performance.now();
   const { canvas, width, height, path, colorSpace } = await grabToCanvas(el.video, state.track);
-  const blob = await canvasToBlob(canvas, { quality: state.settings.quality });
+  const blob = await canvasToBlob(canvas, {
+    type: state.settings.format,
+    quality: state.settings.quality,
+  });
   setBusy(false);
   showResult(blob, `${width}×${height}・${path}・${colorSpace}・${Math.round(performance.now() - started)}ms`);
 }
@@ -218,6 +276,15 @@ async function shootStack() {
   const frames = state.settings.frames;
   setBusy(true, `連写中… 0/${frames}`);
   const started = performance.now();
+
+  // 撮影時間が短いほど手ぶれの累積が減るので、可能なら一時的に 60fps を要求する
+  let restoreFrameRate = null;
+  if (state.settings.highFps) {
+    const before = state.track.getSettings?.().frameRate;
+    const applied = await applyIfSupported(state.track, { frameRate: 60 });
+    if (applied.applied && before) restoreFrameRate = before;
+  }
+
   const result = await captureStack(el.video, state.track, {
     frames,
     scale: state.settings.drizzle ? 2 : 1,
@@ -225,8 +292,12 @@ async function shootStack() {
     onProgress: ({ used }) => setProgress(used / frames, `連写中… ${used}/${frames}`),
   });
   setProgress(1, '書き出し中…');
-  const blob = await canvasToBlob(result.canvas, { quality: state.settings.quality });
+  const blob = await canvasToBlob(result.canvas, {
+    type: state.settings.format,
+    quality: state.settings.quality,
+  });
   result.stacker?.dispose?.();
+  if (restoreFrameRate) await applyIfSupported(state.track, { frameRate: restoreFrameRate });
   setBusy(false);
   const elapsed = Math.round(performance.now() - started);
   if (result.scaleReduced) {
@@ -255,9 +326,23 @@ async function shootPhotoApi() {
   }
   setBusy(true, '撮影中…');
   const started = performance.now();
-  const { blob, width, height } = await takePhotoBlob(state.track);
-  setBusy(false);
-  showResult(blob, `${width}×${height}・写真API・${Math.round(performance.now() - started)}ms`);
+  try {
+    const { blob, width, height } = await takePhotoBlob(state.track, {
+      maxSize: state.settings.photoMaxSize,
+    });
+    setBusy(false);
+    showResult(blob, `${width}×${height}・写真API・${Math.round(performance.now() - started)}ms`);
+  } catch (err) {
+    setBusy(false);
+    const dead = !isTrackAlive(state.track);
+    toast(
+      `写真 API が失敗しました: ${err?.message ?? err}`
+      + (dead ? '（カメラを開き直します）' : ''),
+      4500,
+    );
+    // IPC が切れるとトラックごと死ぬので、開き直して撮影を続けられるようにする
+    if (dead) await startCamera();
+  }
 }
 
 // ---------- 結果 ----------
@@ -285,7 +370,7 @@ function updateThumb(blob) {
 
 async function saveLast() {
   if (!state.lastBlob) return;
-  const ext = state.lastBlob.type.includes('png') ? 'png' : 'jpg';
+  const ext = EXTENSION_OF_TYPE[state.lastBlob.type] ?? 'jpg';
   const result = await saveImage(state.lastBlob, timestampName(ext));
   if (result === 'shared') toast('共有シートから「画像を保存」を選んでください');
   else if (result === 'downloaded') toast('ダウンロードしました');
@@ -312,18 +397,57 @@ document.addEventListener('visibilitychange', async () => {
 
 // ---------- 入力の結線 ----------
 
+/** 端末が本当に符号化できる形式だけを選択肢に出す。 */
+async function populateFormats() {
+  const select = $('formatSelect');
+  const results = await probeEncoders().catch(() => null);
+  state.encoders = results;
+  if (!results) return;
+
+  const labels = {
+    'image/jpeg': 'JPEG',
+    'image/heic': 'HEIC（iOS 標準・同画質で小さい）',
+    'image/avif': 'AVIF',
+    'image/webp': 'WebP',
+    'image/png': 'PNG（無圧縮に近い・巨大）',
+  };
+  const supported = Object.entries(results)
+    .filter(([, r]) => r.supported)
+    .map(([type]) => type);
+
+  select.innerHTML = '';
+  for (const type of ['image/jpeg', 'image/heic', 'image/avif', 'image/webp', 'image/png']) {
+    if (!supported.includes(type)) continue;
+    const option = document.createElement('option');
+    option.value = type;
+    option.textContent = labels[type] ?? type;
+    select.appendChild(option);
+  }
+  if (!supported.includes(state.settings.format)) {
+    state.settings.format = supported.includes('image/jpeg') ? 'image/jpeg' : supported[0];
+    saveSettings();
+  }
+  select.value = state.settings.format;
+}
+
 function bindSettings() {
   const frames = $('framesInput');
   const sharpen = $('sharpenInput');
   const quality = $('qualityInput');
   const drizzle = $('drizzleInput');
   const resolution = $('resolutionSelect');
+  const highFps = $('highFpsInput');
+  const photoMax = $('photoMaxInput');
+  const format = $('formatSelect');
 
   frames.value = state.settings.frames;
   sharpen.value = state.settings.sharpen;
   quality.value = state.settings.quality;
   drizzle.checked = state.settings.drizzle;
   resolution.value = state.settings.resolution;
+  highFps.checked = state.settings.highFps;
+  photoMax.checked = state.settings.photoMaxSize;
+  format.value = state.settings.format;
   $('framesValue').textContent = state.settings.frames;
   $('sharpenValue').textContent = state.settings.sharpen;
   $('qualityValue').textContent = state.settings.quality;
@@ -353,6 +477,22 @@ function bindSettings() {
     state.settings.resolution = resolution.value;
     saveSettings();
     await startCamera();
+  });
+
+  highFps.addEventListener('change', () => {
+    state.settings.highFps = highFps.checked;
+    saveSettings();
+  });
+  photoMax.addEventListener('change', () => {
+    state.settings.photoMaxSize = photoMax.checked;
+    saveSettings();
+    if (photoMax.checked) {
+      toast('端末によってはカメラ接続ごと落ちます。落ちたら自動で開き直します', 3500);
+    }
+  });
+  format.addEventListener('change', () => {
+    state.settings.format = format.value;
+    saveSettings();
   });
 
   $('zoomInput').addEventListener('input', async (event) => {
@@ -408,6 +548,7 @@ bindSettings();
 bindUi();
 setMode('single');
 registerServiceWorker();
+populateFormats();
 
 if (!navigator.mediaDevices?.getUserMedia) {
   el.startNote.textContent = 'この環境ではカメラ API が使えません。HTTPS で開いているか確認してください。';

@@ -2,7 +2,9 @@
 // iOS Safari は要求した解像度に最も近い「プリセット」へ勝手に落とすため、
 // 要求値ではなく track.getSettings() の実測値を常に信用する。
 
-/** 高い順に試す解像度候補。 */
+// 高い順に試す解像度候補。
+// iOS は横で要求しても縦（2160×3840 など）で返すことがあるため、
+// 要求値ではなく getSettings() の実測値を常に表示・使用する。
 export const RESOLUTION_LADDER = [
   { width: 3840, height: 2160 },
   { width: 1920, height: 1440 },
@@ -29,8 +31,12 @@ export async function openStream({
     video.height = { ideal: height };
   }
   // WebKit 独自。省電力のための binned プリセット選択を抑止できる場合がある。
-  // 未知の制約は仕様上無視されるだけなので、そのまま渡して構わない。
-  if (powerEfficient === false) video.powerEfficientPixelFormat = false;
+  // 実機の getCapabilities は `powerEfficient` を返すが、古い WebKit は
+  // `powerEfficientPixelFormat` だったため両方渡す（未知の制約は仕様上無視される）。
+  if (powerEfficient === false) {
+    video.powerEfficient = false;
+    video.powerEfficientPixelFormat = false;
+  }
 
   const stream = await navigator.mediaDevices.getUserMedia({ video, audio: false });
   return stream;

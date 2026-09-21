@@ -75,6 +75,14 @@ html, body {
   display: flex; flex-direction: column; gap: 14px;
 }
 
+.zooms { display: flex; gap: 8px; justify-content: center; }
+.zooms button {
+  appearance: none; border: 1px solid rgba(255,255,255,.18);
+  background: rgba(0,0,0,.4); color: var(--dim);
+  min-width: 46px; padding: 6px 10px; border-radius: 999px; font-size: 12px;
+}
+.zooms button[aria-pressed="true"] { color: #000; background: var(--fg); border-color: var(--fg); font-weight: 600; }
+
 .modes { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
 .mode {
   appearance: none; border: 1px solid rgba(255,255,255,.18);

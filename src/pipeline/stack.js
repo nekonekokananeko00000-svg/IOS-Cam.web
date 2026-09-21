@@ -21,15 +21,15 @@ function makeCanvas(width, height) {
   return { canvas, ctx: canvas.getContext('2d', { willReadFrequently: true }) };
 }
 
-/** 縮小した輝度ピラミッドと、原寸中央クロップの輝度を作る。 */
-function makeAlignmentViews(bitmap, small, crop, srcWidth, srcHeight) {
-  small.ctx.drawImage(bitmap, 0, 0, small.canvas.width, small.canvas.height);
+/** 縮小した輝度ピラミッドと、原寸中央クロップの輝度を作る。source は video 要素でよい。 */
+function makeAlignmentViews(source, small, crop, srcWidth, srcHeight) {
+  small.ctx.drawImage(source, 0, 0, small.canvas.width, small.canvas.height);
   const smallImage = small.ctx.getImageData(0, 0, small.canvas.width, small.canvas.height);
 
   const size = crop.canvas.width;
   const sx = Math.max(0, Math.floor((srcWidth - size) / 2));
   const sy = Math.max(0, Math.floor((srcHeight - size) / 2));
-  crop.ctx.drawImage(bitmap, sx, sy, size, size, 0, 0, size, size);
+  crop.ctx.drawImage(source, sx, sy, size, size, 0, 0, size, size);
   const cropImage = crop.ctx.getImageData(0, 0, size, size);
 
   return {
@@ -91,12 +91,12 @@ export async function captureStack(videoEl, track, {
   const shifts = [];
   let used = 0;
 
-  const total = await collectFrames(videoEl, frames, async (bitmap, index) => {
-    const views = makeAlignmentViews(bitmap, small, crop, srcWidth, srcHeight);
+  const total = await collectFrames(videoEl, frames, async (source, index) => {
+    const views = makeAlignmentViews(source, small, crop, srcWidth, srcHeight);
 
     if (!reference) {
       reference = views;
-      stacker.addFrame(bitmap, { dx: 0, dy: 0, weight: 1, isReference: true });
+      stacker.addFrame(source, { dx: 0, dy: 0, weight: 1, isReference: true });
       used += 1;
       shifts.push({ dx: 0, dy: 0, score: 0 });
       onProgress({ index, used, frames });
@@ -131,7 +131,7 @@ export async function captureStack(videoEl, track, {
     const relative = views.sharpness / Math.max(reference.sharpness, 1e-3);
     const weight = Math.max(0.25, Math.min(1, relative));
 
-    stacker.addFrame(bitmap, { dx, dy, weight });
+    stacker.addFrame(source, { dx, dy, weight });
     used += 1;
     shifts.push(shift);
     onProgress({ index, used, frames });

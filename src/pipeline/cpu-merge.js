@@ -25,14 +25,14 @@ export class CpuStacker {
     this.reference = null;
   }
 
-  _readPixels(bitmap) {
+  _readPixels(source) {
     this.scratchCtx.clearRect(0, 0, this.outWidth, this.outHeight);
-    this.scratchCtx.drawImage(bitmap, 0, 0, this.outWidth, this.outHeight);
+    this.scratchCtx.drawImage(source, 0, 0, this.outWidth, this.outHeight);
     return this.scratchCtx.getImageData(0, 0, this.outWidth, this.outHeight).data;
   }
 
-  addFrame(bitmap, { dx = 0, dy = 0, weight = 1, isReference = false } = {}) {
-    const px = this._readPixels(bitmap);
+  addFrame(source, { dx = 0, dy = 0, weight = 1, isReference = false } = {}) {
+    const px = this._readPixels(source);
     const first = isReference || this.frameCount === 0;
     if (first) this.reference = px;
     accumulateFrame({

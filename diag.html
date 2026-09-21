@@ -84,7 +84,9 @@
     シャッター音の抑止が許可されていないため、音が鳴る可能性が高い経路です。
     <strong>音量を上げ、消音スイッチを解除した状態で</strong>試し、結果を記録してください。
   </p>
-  <button id="photoBtn">1 枚撮る</button>
+  <button class="primary" id="photoBtn">① 素の takePhoto()</button>
+  <button id="photoMaxBtn">② 最大解像度を要求</button>
+  <p class="hint">①が通れば音の判定ができます。②は端末によってはカメラ接続ごと落ちます。</p>
   <div id="photoOut"></div>
   <div id="soundAsk" hidden>
     <p class="hint">シャッター音は鳴りましたか？</p>
@@ -97,12 +99,18 @@
   <h2>7. GPU と合成</h2>
   <button id="gpuBtn">調べる</button>
   <button id="selfTestBtn">GPU/CPU 一致テスト</button>
-  <p class="hint">同じ入力を GPU シェーダと CPU 実装に通し、結果が一致するか確かめます。</p>
+  <p class="hint">
+    同じ入力を GPU シェーダと CPU 実装に通し、一致するか確かめます。
+    canvas と ImageBitmap の両方で試します（WebGL は ImageBitmap で上下反転の扱いが変わるため）。
+  </p>
   <pre id="gpuOut">—</pre>
 </section>
 
 <section>
   <h2>8. 書き出し形式</h2>
+  <p class="hint">
+    toBlob は未対応形式でも例外を投げず PNG を返すため、先頭バイトと再デコードで実体を確かめます。
+  </p>
   <button id="encodeBtn">調べる</button>
   <pre id="encodeOut">—</pre>
 </section>
