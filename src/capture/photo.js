@@ -35,12 +35,15 @@ export async function getPhotoCapabilities(track) {
  *
  * @returns {Promise<{blob: Blob, width:number, height:number, requested:object}>}
  */
-export async function takePhotoBlob(track, { maxSize = false } = {}) {
+export async function takePhotoBlob(track, { maxSize = false, size = null } = {}) {
   if (!isPhotoModeAvailable()) throw new Error('この端末は高画質モードに対応していません');
   const ic = new ImageCapture(track);
 
   const settings = {};
-  if (maxSize) {
+  if (size) {
+    settings.imageWidth = size.width;
+    settings.imageHeight = size.height;
+  } else if (maxSize) {
     try {
       const caps = await ic.getPhotoCapabilities();
       if (caps?.imageWidth?.max) settings.imageWidth = caps.imageWidth.max;
@@ -55,7 +58,7 @@ export async function takePhotoBlob(track, { maxSize = false } = {}) {
     : await ic.takePhoto();
 
   const bitmap = await createImageBitmap(blob);
-  const size = { width: bitmap.width, height: bitmap.height };
+  const actual = { width: bitmap.width, height: bitmap.height };
   bitmap.close?.();
-  return { blob, ...size, requested: settings };
+  return { blob, ...actual, requested: settings };
 }

@@ -234,9 +234,9 @@ function syncCapabilityControls(caps) {
 // ---------- 撮影 ----------
 
 function modeLabel() {
-  if (state.mode === 'single') return '静音1枚';
-  if (state.mode === 'stack') return `静音合成×${state.settings.frames}`;
-  return '写真API';
+  if (state.mode === 'single') return '即写';
+  if (state.mode === 'stack') return `合成×${state.settings.frames}`;
+  return '単写';
 }
 
 function setMode(mode) {
@@ -317,9 +317,11 @@ async function shootPhotoApi() {
   }
   if (!state.photoWarned) {
     const ok = window.confirm(
-      '写真 API は端末内部の写真撮影処理（AVCapturePhotoOutput）を使います。\n'
-      + '日本国内向けの端末では、この経路でシャッター音が鳴る可能性が高いです。\n\n'
-      + '続けますか？',
+      '単写は端末内部の写真撮影処理（AVCapturePhotoOutput）を使います。\n\n'
+      + '手元の iPhone（iOS 18.7）では無音でしたが、WebKit 側に音を止める処理は無く、'
+      + '機種や iOS の版によっては鳴る可能性があります。\n'
+      + '初めて使うときは、音量を上げた状態で一度試してください。\n\n'
+      + '撮影には 1 秒ほどかかります。続けますか？',
     );
     if (!ok) return;
     state.photoWarned = true;
@@ -331,7 +333,7 @@ async function shootPhotoApi() {
       maxSize: state.settings.photoMaxSize,
     });
     setBusy(false);
-    showResult(blob, `${width}×${height}・写真API・${Math.round(performance.now() - started)}ms`);
+    showResult(blob, `${width}×${height}・単写（写真API）・${Math.round(performance.now() - started)}ms`);
   } catch (err) {
     setBusy(false);
     const dead = !isTrackAlive(state.track);

@@ -116,6 +116,29 @@
 </section>
 
 <section>
+  <h2>10. 写真API と フレーム切り出しの比較</h2>
+  <p class="hint">
+    同じ場面を両方の経路で撮り、解像度・バイト数・所要時間・シャープネス・ノイズを並べます。
+    <strong>三脚や机に置いて固定し、明るさの変わらない被写体</strong>に向けてから実行してください。
+    写真 API は 1 枚 1 秒以上かかるため、全部で 30 秒ほどかかります。
+  </p>
+  <button class="primary" id="compareBtn">720p / 1080p / 4K で比較</button>
+  <button id="compareCurrentBtn">今の解像度だけ</button>
+  <div id="compareOut"></div>
+  <div id="compareSound"></div>
+</section>
+
+<section>
+  <h2>11. 写真 API の要求サイズ上限を探る<span class="warn">カメラが落ちる場合あり</span></h2>
+  <p class="hint">
+    映像サイズの ×1 / ×1.5 / ×2 と、能力値の最大を順に要求し、どこから落ちるかを調べます。
+    落ちたら自動でカメラを開き直します。
+  </p>
+  <button id="limitBtn">探索する</button>
+  <div id="limitOut"></div>
+</section>
+
+<section>
   <h2>9. 結果</h2>
   <button class="primary" id="copyBtn">結果をコピー</button>
   <button id="shareBtn">共有</button>

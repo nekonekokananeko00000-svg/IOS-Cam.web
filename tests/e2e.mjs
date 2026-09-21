@@ -160,6 +160,11 @@ await diag.click('#encodeBtn');
 await diag.click('#selfTestBtn');
 await diag.waitForFunction(() => /verdict|error/.test(document.getElementById('gpuOut').textContent), null, { timeout: 30000 });
 
+// 写真API と フレーム切り出しの比較（Chromium は takePhoto に対応しているので配線を確認できる）
+await diag.click('#compareCurrentBtn');
+await diag.waitForFunction(() => document.querySelectorAll('#compareOut tbody tr').length >= 2,
+  null, { timeout: 60000 });
+
 const report = await diag.evaluate(() => JSON.parse(document.getElementById('resultOut').textContent));
 log('\n--- diag（抜粋）---');
 log(JSON.stringify({ framePaths: report.framePaths, gpu: report.gpu, selfTest: report.selfTest }, null, 2));
@@ -175,6 +180,16 @@ if (report.selfTest && !report.selfTest.error) {
   check('ImageBitmap 入力で上下が反転していない', report.selfTest.orientationOk === true,
     JSON.stringify(report.selfTest.imageBitmapInput));
 }
+const comparison = report.comparison?.[0];
+check('写真API とフレーム切り出しを比較できた',
+  !!comparison?.photo && !!comparison?.frame, JSON.stringify(comparison));
+if (comparison?.photo && comparison?.frame) {
+  log(`      → 写真API ${comparison.photo.size} ${(comparison.photo.bytes / 1024).toFixed(0)}KB `
+    + `${comparison.photo.ms}ms シャープ ${comparison.photo.sharpness} ノイズ ${comparison.photo.noise}`);
+  log(`      → フレーム ${comparison.frame.size} ${(comparison.frame.bytes / 1024).toFixed(0)}KB `
+    + `${comparison.frame.ms}ms シャープ ${comparison.frame.sharpness} ノイズ ${comparison.frame.noise}`);
+}
+
 check('ページエラーが出ていない', errors.length === 0, errors.slice(0, 5).join(' | '));
 
 await browser.close();

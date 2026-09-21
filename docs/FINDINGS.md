@@ -14,8 +14,9 @@
 - [x] `getUserMedia` で実際に得られる最大解像度 → **2160×3840 @30fps**
 - [x] `powerEfficientPixelFormat` で binned を回避できるか → **変化なし**（制約名は `powerEfficient` が正しい）
 - [x] `grabFrame` が `drawImage` より速いか → **遅い**（34ms 対 ほぼ 0ms）
-- [ ] **`takePhoto()` でシャッター音が鳴るか**（最重要・未確定。最大解像度要求で落ちたため）
-- [ ] `takePhoto()` の解像度が映像トラックより大きいか（同上）
+- [x] **`takePhoto()` でシャッター音が鳴るか** → **鳴らなかった**（素の `takePhoto()`・480×640 セッション）
+- [x] `takePhoto()` の解像度が映像トラックより大きいか → **同じだった**（480×640）
+- [ ] 4K セッションでも無音か／解像度と画質はどうか（比較セクションで計測する）
 - [x] 連写の実効 fps → コールバックは 30.4fps。ただし 4K 実撮影は 12 枚で約 3.8 秒
 - [x] WebGL2 の浮動小数レンダーターゲット → 使える。GPU/CPU 一致テストも通る
 - [ ] ホーム画面から起動したときにカメラ許可が保持されるか
@@ -137,3 +138,54 @@ UA: `Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15
   シェーダ内で画像座標系へ変換する方式に変更し、入力の種類によらず同じ結果になるようにした。
   診断ページの自己テストが canvas 入力だけだったため見逃していたので、
   **ImageBitmap 入力の自己テストを追加**した（バグを戻すと maxDiff 140 で確実に落ちる）。
+
+
+---
+
+## 2 回目の計測（2026-09-21・上下反転の修正後）
+
+### 決定的な結果: **`takePhoto()` は無音だった**
+
+```json
+"takePhoto": {
+  "supported": true, "maxSizeRequested": false,
+  "photoSize": "480×640", "videoSize": "480×640", "largerThanVideo": false,
+  "type": "image/jpeg", "bytes": 227363, "elapsedMs": 1303,
+  "trackAliveAfter": true, "shutterSound": "silent"
+}
+```
+
+同じ端末でスクリーンショット時にはシャッター音が鳴る（＝日本国内向け端末）にもかかわらず、
+Safari の `takePhoto()` では鳴らなかった。
+
+**WebKit のソースを確認した結果、音を抑止するコードは存在しない。**
+`AVVideoCaptureSource::photoConfiguration()` は
+`photoSettingsWithFormat:{AVVideoCodecKey: JPEG, AVVideoQualityKey: 1}` を組み立てて
+`capturePhotoWithSettings:` に渡すだけで、`shutterSoundSuppression` には触れていない。
+つまり **WebKit が止めているのではなく、この経路が OS の強制対象から外れている**。
+Apple が意図した挙動とは限らず、**将来の iOS で鳴るようになる可能性がある**。
+→ 写真撮影 API を通らない「即写」「合成」は保険として残す。
+
+### そのほか
+
+| 項目 | 結果 |
+|---|---|
+| `takePhoto()` の所要時間 | **1303ms**。連写・合成には使えない |
+| JPEG の品質 | WebKit が `AVVideoQualityKey: 1`（最高品質）で符号化。227KB / 480×640 |
+| 最大解像度の要求 | 依然 `IPC Connection closed`。ただし**今回はトラックが生存**した |
+| 上下反転の修正 | canvas 入力・ImageBitmap 入力とも **maxDiff 0**、上下反転版との差は 141 → 修正を確認 |
+| `videoFrame` 経路 | 「回転」と判定され、自動的に除外された（480×640 に対し 640×480 を返す） |
+| `grabFrame` | 34ms。`drawImage` はほぼ 0ms |
+| HEIC / AVIF / WebP | `blob.type` は `image/heic` などを返すが、**実体は PNG**。実体検査が正しく弾いた |
+| GPU 合成 | 1920×1080 を 10 枚で 370ms（等倍）／367ms（2 倍格子） |
+
+`toBlob` の件は「未対応形式は PNG にフォールバックする」という HTML の仕様どおりで、
+`blob.type` だけを見ていると HEIC で保存できていると誤解する。実体（先頭バイト）と
+再デコードまで見る検査を入れてあるので、保存形式の選択肢には **JPEG と PNG だけ**が出る。
+
+### 次に測ること
+
+`diag.html` の「10. 写真API と フレーム切り出しの比較」を 720p / 1080p / 4K で実行し、
+解像度・バイト数・所要時間・シャープネス（ラプラシアン分散）・ノイズ（平坦部の標準偏差）を比べる。
+「11. 要求サイズの上限」でどこからクラッシュするかも調べる。
+その結果で既定モードを決める。

@@ -6,10 +6,10 @@ import {
 import {
   grabSilentFrame, detectSilentPaths, resetImageCaptureCache, matchesOrientation,
 } from './capture/frame.js';
-import { onEachFrame } from './capture/burst.js';
+import { onEachFrame, sharpnessScore } from './capture/burst.js';
 import { isPhotoModeAvailable, takePhotoBlob, getPhotoCapabilities, isTrackAlive } from './capture/photo.js';
 import { isGpuStackSupported, GpuStacker } from './pipeline/merge.js';
-import { probeEncoders } from './encode.js';
+import { probeEncoders, canvasToBlob } from './encode.js';
 
 const $ = (id) => document.getElementById(id);
 const video = $('video');
@@ -449,4 +449,266 @@ $('selfTestBtn').addEventListener('click', async () => {
   report.selfTest = result;
   show('gpuOut', result);
   $('selfTestBtn').disabled = false;
+});
+
+
+// ---- 10. 写真API と フレーム切り出しの比較 ----
+//
+// 「写真 API が無音なら、他の方式は要らないのでは」を数字で判断するための計測。
+// 解像度・バイト数・所要時間に加えて、シャープネス（ラプラシアン分散）と
+// ノイズ（平坦部の標準偏差）を同じ条件で比べる。
+
+/** 中央を切り出して解析用の ImageData を返す。両者を同じ画素数で比べるため。 */
+async function centerCrop(source, size = 512) {
+  const bitmap = source instanceof Blob ? await createImageBitmap(source) : source;
+  const side = Math.min(size, bitmap.width, bitmap.height);
+  const canvas = document.createElement('canvas');
+  canvas.width = side;
+  canvas.height = side;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(
+    bitmap,
+    Math.floor((bitmap.width - side) / 2), Math.floor((bitmap.height - side) / 2), side, side,
+    0, 0, side, side,
+  );
+  const data = ctx.getImageData(0, 0, side, side);
+  if (source instanceof Blob) bitmap.close?.();
+  return data;
+}
+
+/**
+ * 平坦な場所の標準偏差をノイズの目安として返す。
+ * 8x8 ブロックごとの標準偏差を求め、その下位 10% の中央値を取る
+ * （模様のある場所を避けて、のっぺりした部分だけを見る）。
+ */
+function noiseFloor(imageData) {
+  const { data, width, height } = imageData;
+  const block = 8;
+  const stds = [];
+  for (let by = 0; by + block <= height; by += block) {
+    for (let bx = 0; bx + block <= width; bx += block) {
+      let sum = 0;
+      let sumSq = 0;
+      for (let y = 0; y < block; y += 1) {
+        for (let x = 0; x < block; x += 1) {
+          const i = ((by + y) * width + (bx + x)) * 4;
+          const v = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+          sum += v;
+          sumSq += v * v;
+        }
+      }
+      const n = block * block;
+      stds.push(Math.sqrt(Math.max(0, sumSq / n - (sum / n) ** 2)));
+    }
+  }
+  if (stds.length === 0) return 0;
+  stds.sort((a, b) => a - b);
+  const flat = stds.slice(0, Math.max(1, Math.round(stds.length * 0.1)));
+  return flat[Math.floor(flat.length / 2)];
+}
+
+async function measureBlob(blob) {
+  const crop = await centerCrop(blob);
+  return {
+    bytes: blob.size,
+    type: blob.type,
+    sharpness: Math.round(sharpnessScore(crop)),
+    noise: +noiseFloor(crop).toFixed(2),
+  };
+}
+
+const wait = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
+
+/** 1 つの解像度について、写真 API とフレーム切り出しを同条件で撮り比べる。 */
+async function compareAtResolution(res) {
+  const facingMode = report.opened?.facingMode ?? 'environment';
+  if (res) {
+    stopStream(stream);
+    resetImageCaptureCache();
+    stream = await openStream({ facingMode, ...res });
+    track = stream.getVideoTracks()[0];
+    await attachToVideo(video, stream);
+    await wait(1200); // 露出と焦点が落ち着くのを待つ
+  }
+  const settings = track.getSettings();
+  const entry = {
+    requested: res ? `${res.width}×${res.height}` : '現在の設定',
+    videoSize: `${settings.width}×${settings.height}`,
+    photo: null,
+    frame: null,
+    shutterSound: 'unknown',
+  };
+
+  // 写真 API を 3 回（初回だけ遅いのかを見る）
+  const runs = [];
+  for (let i = 0; i < 3; i += 1) {
+    const t0 = performance.now();
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      const shot = await takePhotoBlob(track);
+      // eslint-disable-next-line no-await-in-loop
+      const metrics = await measureBlob(shot.blob);
+      runs.push({
+        ok: true,
+        size: `${shot.width}×${shot.height}`,
+        ms: Math.round(performance.now() - t0),
+        ...metrics,
+      });
+    } catch (err) {
+      runs.push({ ok: false, error: String(err?.message ?? err), ms: Math.round(performance.now() - t0) });
+      break;
+    }
+  }
+  entry.photoRuns = runs;
+  entry.photo = runs.find((r) => r.ok) ?? null;
+  entry.trackAliveAfterPhoto = isTrackAlive(track);
+
+  // 同じ場面をフレーム切り出しでも撮る
+  if (isTrackAlive(track)) {
+    const t0 = performance.now();
+    const frame = await grabSilentFrame(video, track);
+    const canvas = document.createElement('canvas');
+    canvas.width = frame.width;
+    canvas.height = frame.height;
+    canvas.getContext('2d').drawImage(frame.bitmap, 0, 0);
+    frame.bitmap.close?.();
+    const blob = await canvasToBlob(canvas, { type: 'image/jpeg', quality: 0.95 });
+    entry.frame = {
+      ok: true,
+      path: frame.path,
+      size: `${frame.width}×${frame.height}`,
+      ms: Math.round(performance.now() - t0),
+      ...(await measureBlob(blob)),
+    };
+  }
+  return entry;
+}
+
+function renderComparison(entries) {
+  const rows = [];
+  for (const e of entries) {
+    for (const [label, m] of [['写真API', e.photo], ['フレーム', e.frame]]) {
+      rows.push({
+        session: e.videoSize,
+        method: label,
+        size: m?.size ?? (e.photoRuns?.[0]?.error ? '×' : '—'),
+        bytes: m ? `${(m.bytes / 1024).toFixed(0)}KB` : '—',
+        ms: m ? `${m.ms}ms` : (e.photoRuns?.[0]?.ms ? `${e.photoRuns[0].ms}ms` : '—'),
+        sharp: m ? m.sharpness : '—',
+        noise: m ? m.noise : '—',
+      });
+    }
+  }
+  $('compareOut').innerHTML = table(rows, [
+    { key: 'session', label: 'セッション' },
+    { key: 'method', label: '方式' },
+    { key: 'size', label: '解像度' },
+    { key: 'bytes', label: 'サイズ' },
+    { key: 'ms', label: '所要' },
+    { key: 'sharp', label: 'シャープ↑' },
+    { key: 'noise', label: 'ノイズ↓' },
+  ]);
+
+  // 解像度ごとに音の有無を記録できるようにする
+  const holder = $('compareSound');
+  holder.innerHTML = '<p class="hint">写真 API の撮影時、シャッター音は鳴りましたか？</p>';
+  entries.forEach((e, index) => {
+    const line = document.createElement('div');
+    line.innerHTML = `<span class="hint">${e.videoSize}: </span>`;
+    for (const [label, value, cls] of [['鳴った', 'played', 'bad'], ['鳴らなかった', 'silent', 'good']]) {
+      const button = document.createElement('button');
+      button.className = cls;
+      button.textContent = label;
+      button.addEventListener('click', () => {
+        report.comparison[index].shutterSound = value;
+        line.querySelector('.mark')?.remove();
+        const mark = document.createElement('span');
+        mark.className = 'mark hint';
+        mark.textContent = ` → ${label}`;
+        line.appendChild(mark);
+        refreshResult();
+      });
+      line.appendChild(button);
+    }
+    holder.appendChild(line);
+  });
+}
+
+async function runComparison(resolutions) {
+  $('compareBtn').disabled = true;
+  $('compareCurrentBtn').disabled = true;
+  report.comparison = [];
+  try {
+    for (const res of resolutions) {
+      $('compareOut').innerHTML = `<pre>${res ? `${res.width}×${res.height}` : '現在の設定'} を計測中…</pre>`;
+      // eslint-disable-next-line no-await-in-loop
+      const entry = await compareAtResolution(res);
+      report.comparison.push(entry);
+      renderComparison(report.comparison);
+      refreshResult();
+    }
+  } catch (err) {
+    $('compareOut').innerHTML += `<pre>中断: ${err?.message ?? err}</pre>`;
+  }
+  $('compareBtn').disabled = false;
+  $('compareCurrentBtn').disabled = false;
+}
+
+$('compareBtn').addEventListener('click', () => runComparison([
+  { width: 1280, height: 720 },
+  { width: 1920, height: 1080 },
+  { width: 3840, height: 2160 },
+]));
+$('compareCurrentBtn').addEventListener('click', () => runComparison([null]));
+
+// ---- 11. 写真 API の要求サイズ上限 ----
+$('limitBtn').addEventListener('click', async () => {
+  if (!track) return show('limitOut', '先にカメラを開いてください');
+  $('limitBtn').disabled = true;
+  const base = track.getSettings();
+  const caps = await getPhotoCapabilities(track);
+  const candidates = [
+    { label: '×1（映像と同じ）', width: base.width, height: base.height },
+    { label: '×1.5', width: Math.round(base.width * 1.5), height: Math.round(base.height * 1.5) },
+    { label: '×2', width: base.width * 2, height: base.height * 2 },
+  ];
+  if (caps?.imageWidth?.max) {
+    candidates.push({ label: '能力値の最大', width: caps.imageWidth.max, height: caps.imageHeight.max });
+  }
+
+  const rows = [];
+  for (const candidate of candidates) {
+    let row;
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      const shot = await takePhotoBlob(track, { size: { width: candidate.width, height: candidate.height } });
+      row = {
+        requested: `${candidate.label} ${candidate.width}×${candidate.height}`,
+        result: `${shot.width}×${shot.height}`,
+        bytes: `${(shot.blob.size / 1024).toFixed(0)}KB`,
+        alive: isTrackAlive(track) ? '生存' : '死亡',
+      };
+    } catch (err) {
+      row = {
+        requested: `${candidate.label} ${candidate.width}×${candidate.height}`,
+        result: `× ${err?.message ?? err}`,
+        bytes: '—',
+        alive: isTrackAlive(track) ? '生存' : '死亡',
+      };
+    }
+    rows.push(row);
+    $('limitOut').innerHTML = table(rows, [
+      { key: 'requested', label: '要求' },
+      { key: 'result', label: '結果' },
+      { key: 'bytes', label: 'サイズ' },
+      { key: 'alive', label: 'トラック' },
+    ]);
+    if (!isTrackAlive(track)) {
+      // eslint-disable-next-line no-await-in-loop
+      await open(report.opened?.facingMode ?? 'environment');
+    }
+  }
+  report.photoSizeLimit = rows;
+  refreshResult();
+  $('limitBtn').disabled = false;
 });
