@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>静音カメラ</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#000000">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="静音カメラ">
+<meta name="description" content="シャッター音の鳴らないカメラ。インストール不要、広告なし、写真は端末の外に出ません。">
+<link rel="manifest" href="./manifest.webmanifest">
+<link rel="apple-touch-icon" href="./icons/icon-180.png">
+<link rel="icon" href="./icons/icon-180.png">
+<link rel="stylesheet" href="./src/ui/styles.css">
+</head>
+<body>
+<div id="app">
+  <div id="stage">
+    <video id="preview" playsinline autoplay muted></video>
+    <div id="grid"></div>
+  </div>
+
+  <div class="topbar">
+    <span class="chip" id="statusChip">待機中</span>
+    <div style="display:flex; gap:8px">
+      <button class="icon-btn" id="gridBtn" aria-label="グリッド">#</button>
+      <button class="icon-btn" id="settingsBtn" aria-label="設定">⚙</button>
+    </div>
+  </div>
+
+  <div class="bottombar">
+    <div class="modes" role="group" aria-label="撮影モード">
+      <button class="mode" id="modeSingle" aria-pressed="true">静音・1枚</button>
+      <button class="mode" id="modeStack" aria-pressed="false">静音・高画質</button>
+      <button class="mode warn" id="modePhoto" aria-pressed="false">写真API</button>
+    </div>
+    <div class="controls">
+      <button id="thumb" aria-label="直前の写真"></button>
+      <button id="shutter" aria-label="撮影" disabled></button>
+      <button class="icon-btn" id="flip" aria-label="カメラ切替">⟲</button>
+    </div>
+  </div>
+
+  <div id="progress">
+    <div id="progressText">合成中…</div>
+    <div class="bar"><span id="progressBar"></span></div>
+  </div>
+
+  <div id="toast"></div>
+
+  <section class="sheet" id="sheet" aria-label="設定">
+    <h2>設定</h2>
+    <div class="row">
+      <label for="framesInput">合成枚数
+        <span class="hint">多いほど低ノイズ。静止した被写体向け。</span>
+      </label>
+      <span><input type="range" id="framesInput" min="2" max="48" step="1" value="12"> <span id="framesValue">12</span></span>
+    </div>
+    <div class="row">
+      <label for="drizzleInput">超解像（2倍格子）
+        <span class="hint">手ぶれのサブピクセルずれを解像度に変える。処理は重い。</span>
+      </label>
+      <input type="checkbox" id="drizzleInput">
+    </div>
+    <div class="row">
+      <label for="sharpenInput">シャープ
+        <span class="hint">強くしすぎると輪郭が白く縁取られる。</span>
+      </label>
+      <span><input type="range" id="sharpenInput" min="0" max="1" step="0.05" value="0.35"> <span id="sharpenValue">0.35</span></span>
+    </div>
+    <div class="row">
+      <label for="resolutionSelect">解像度
+        <span class="hint">端末が対応する近いプリセットに丸められます。</span>
+      </label>
+      <select id="resolutionSelect">
+        <option value="auto">自動（最大）</option>
+        <option value="3840x2160">3840 × 2160</option>
+        <option value="1920x1440">1920 × 1440</option>
+        <option value="1920x1080">1920 × 1080</option>
+        <option value="1280x720">1280 × 720</option>
+      </select>
+    </div>
+    <div class="row" id="zoomRow" hidden>
+      <label for="zoomInput">ズーム</label>
+      <span><input type="range" id="zoomInput" min="1" max="5" step="0.1" value="1"> <span id="zoomValue">1.0×</span></span>
+    </div>
+    <div class="row" id="torchRow" hidden>
+      <label for="torchInput">ライト</label>
+      <input type="checkbox" id="torchInput">
+    </div>
+    <div class="row">
+      <label for="qualityInput">JPEG 品質</label>
+      <span><input type="range" id="qualityInput" min="0.7" max="1" step="0.01" value="0.95"> <span id="qualityValue">0.95</span></span>
+    </div>
+    <div class="row">
+      <label>端末情報<span class="hint" id="deviceInfo">—</span></label>
+      <button class="small" id="diagLink">診断</button>
+    </div>
+    <div class="row">
+      <label>閉じる</label>
+      <button class="small" id="closeSheet">完了</button>
+    </div>
+  </section>
+
+  <section class="overlay" id="overlay" aria-label="撮影結果">
+    <div class="body"><img id="shot" alt="撮影した写真"></div>
+    <div class="meta" id="shotMeta"></div>
+    <div class="actions">
+      <button id="discardBtn">破棄</button>
+      <button id="saveBtn">保存</button>
+    </div>
+  </section>
+
+  <section class="start" id="start">
+    <h1>静音カメラ</h1>
+    <p>映像フレームを切り出して保存するため、シャッター音は鳴りません。</p>
+    <ul>
+      <li>写真は端末の中だけで処理され、どこにも送信されません。</li>
+      <li>保存は共有シートの「画像を保存」から行います。</li>
+      <li>ホーム画面に追加すると、アプリのように全画面で起動します。</li>
+      <li>盗撮などの違法な用途には使用しないでください。</li>
+    </ul>
+    <button id="startBtn">カメラを開始</button>
+    <p id="startNote"></p>
+  </section>
+</div>
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>

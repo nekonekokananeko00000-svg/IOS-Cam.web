@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>静音カメラ 診断</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#101014">
+<style>
+  :root { color-scheme: dark; }
+  body {
+    margin: 0; padding: 16px env(safe-area-inset-right) calc(env(safe-area-inset-bottom) + 24px) env(safe-area-inset-left);
+    background: #101014; color: #f2f2f7;
+    font: 14px/1.6 -apple-system, BlinkMacSystemFont, "Hiragino Sans", sans-serif;
+  }
+  h1 { font-size: 18px; margin: 8px 0 4px; }
+  p.lead { color: #a0a0a8; font-size: 13px; margin: 0 0 16px; }
+  section { border: 1px solid #2a2a32; border-radius: 12px; padding: 12px; margin-bottom: 12px; background: #16161c; }
+  section h2 { font-size: 14px; margin: 0 0 8px; }
+  button {
+    appearance: none; border: 0; border-radius: 10px; padding: 11px 14px;
+    background: #3a3a44; color: #fff; font-size: 14px; margin: 0 6px 6px 0;
+  }
+  button.primary { background: #0a84ff; }
+  button.good { background: #30d158; color: #000; }
+  button.bad { background: #ff453a; }
+  button:disabled { opacity: .45; }
+  pre { white-space: pre-wrap; word-break: break-all; font-size: 12px; color: #c8c8d0; margin: 8px 0 0; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px; }
+  th, td { border-bottom: 1px solid #2a2a32; padding: 5px 4px; text-align: left; }
+  th { color: #a0a0a8; font-weight: 500; }
+  video { width: 100%; max-height: 34vh; background: #000; border-radius: 8px; margin-top: 8px; }
+  .hint { color: #a0a0a8; font-size: 12px; }
+  .ok { color: #30d158; } .ng { color: #ff453a; } .warn { color: #ffd60a; }
+  a { color: #0a84ff; }
+</style>
+</head>
+<body>
+<h1>静音カメラ 診断</h1>
+<p class="lead">実機でしか分からないことを測ります。上から順に実行し、最後に結果をコピーしてください。</p>
+
+<section>
+  <h2>0. 環境</h2>
+  <pre id="envOut">—</pre>
+</section>
+
+<section>
+  <h2>1. カメラを開く</h2>
+  <button class="primary" id="openBack">背面カメラ</button>
+  <button id="openFront">前面カメラ</button>
+  <video id="video" playsinline autoplay muted></video>
+  <pre id="openOut">—</pre>
+</section>
+
+<section>
+  <h2>2. 解像度ラダー探索</h2>
+  <p class="hint">要求値ごとに実際に得られる解像度を調べます（20 秒ほどかかります）。</p>
+  <button id="ladderBtn">探索する</button>
+  <div id="ladderOut"></div>
+</section>
+
+<section>
+  <h2>3. トラックの能力</h2>
+  <button id="capsBtn">取得する</button>
+  <pre id="capsOut">—</pre>
+</section>
+
+<section>
+  <h2>4. 無音フレーム取得のベンチ</h2>
+  <p class="hint">grabFrame / VideoFrame / drawImage を各 20 回。いずれも音は鳴りません。</p>
+  <button id="benchBtn">計測する</button>
+  <div id="benchOut"></div>
+</section>
+
+<section>
+  <h2>5. 連写レート</h2>
+  <button id="fpsBtn">3 秒間 計測</button>
+  <pre id="fpsOut">—</pre>
+</section>
+
+<section>
+  <h2>6. 写真 API（takePhoto）<span class="warn">音が鳴る可能性あり</span></h2>
+  <p class="hint">
+    WebKit はこの API を AVCapturePhotoOutput で実装しています。日本国内向け端末では
+    シャッター音の抑止が許可されていないため、音が鳴る可能性が高い経路です。
+    <strong>音量を上げ、消音スイッチを解除した状態で</strong>試し、結果を記録してください。
+  </p>
+  <button id="photoBtn">1 枚撮る</button>
+  <div id="photoOut"></div>
+  <div id="soundAsk" hidden>
+    <p class="hint">シャッター音は鳴りましたか？</p>
+    <button class="bad" id="soundYes">鳴った</button>
+    <button class="good" id="soundNo">鳴らなかった</button>
+  </div>
+</section>
+
+<section>
+  <h2>7. GPU と合成</h2>
+  <button id="gpuBtn">調べる</button>
+  <button id="selfTestBtn">GPU/CPU 一致テスト</button>
+  <p class="hint">同じ入力を GPU シェーダと CPU 実装に通し、結果が一致するか確かめます。</p>
+  <pre id="gpuOut">—</pre>
+</section>
+
+<section>
+  <h2>8. 書き出し形式</h2>
+  <button id="encodeBtn">調べる</button>
+  <pre id="encodeOut">—</pre>
+</section>
+
+<section>
+  <h2>9. 結果</h2>
+  <button class="primary" id="copyBtn">結果をコピー</button>
+  <button id="shareBtn">共有</button>
+  <button id="backBtn">カメラへ戻る</button>
+  <pre id="resultOut">—</pre>
+</section>
+
+<script type="module" src="./src/diag.js"></script>
+</body>
+</html>
