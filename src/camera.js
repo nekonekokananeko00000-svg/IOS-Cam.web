@@ -1,6 +1,6 @@
-// カメラの起動と能力探索。
-// iOS Safari は要求した解像度に最も近い「プリセット」へ勝手に落とすため、
-// 要求値ではなく track.getSettings() の実測値を常に信用する。
+// カメラの起動と、使える機能の確認。
+// iOS の Safari は、要求した解像度に近い値へ自動的に調整する。
+// そのため、要求した値ではなく track.getSettings() が返す値を常に使う。
 
 // 高い順に試す解像度候補。
 // iOS は横で要求しても縦（2160×3840 など）で返すことがあるため、
@@ -14,8 +14,8 @@ export const RESOLUTION_LADDER = [
 ];
 
 /**
- * 映像トラックを1本開く。既存ストリームは呼び出し側で必ず止めてから呼ぶこと
- * （iOS では2本目の getUserMedia が1本目の映像を殺す）。
+ * 映像を 1 本開く。すでに開いているものは、呼び出す前に必ず止めること。
+ * iOS では 2 本目を開くと 1 本目の映像が止まる。
  */
 export async function openStream({
   facingMode = 'environment',
@@ -42,20 +42,20 @@ export async function openStream({
   return stream;
 }
 
-/** ストリームを完全に停止する。 */
+/** 映像を完全に止める。 */
 export function stopStream(stream) {
   if (!stream) return;
   for (const track of stream.getTracks()) track.stop();
 }
 
-/** トラックの実測設定と能力をまとめて取り出す。 */
+/** いま適用されている設定と、使える機能をまとめて取り出す。 */
 export function inspectTrack(track) {
   const settings = track.getSettings ? track.getSettings() : {};
   let capabilities = {};
   try {
     capabilities = track.getCapabilities ? track.getCapabilities() : {};
   } catch {
-    // 一部の iOS バージョンは getCapabilities で投げる
+    // iOS の版によっては getCapabilities が例外を出す
   }
   return {
     label: track.label,
@@ -69,8 +69,8 @@ export function inspectTrack(track) {
 }
 
 /**
- * 解像度ラダーを順に試し、最初に成功したストリームを返す。
- * 戻り値の actual は getSettings() による実測値。
+ * 解像度の候補を大きい順に試し、最初に成功したものを返す。
+ * 戻り値の actual は getSettings() が返した値である。
  */
 export async function openBestStream({ facingMode = 'environment', maxPixels = Infinity } = {}) {
   let lastError = null;
@@ -85,7 +85,7 @@ export async function openBestStream({ facingMode = 'environment', maxPixels = I
       lastError = err;
     }
   }
-  // ラダーが全滅したら制約なしで最後の望みを賭ける
+  // どの候補も通らなかった場合は、解像度を指定せずに開く
   const stream = await navigator.mediaDevices.getUserMedia({
     video: { facingMode: { ideal: facingMode } },
     audio: false,
@@ -96,7 +96,7 @@ export async function openBestStream({ facingMode = 'environment', maxPixels = I
   return { stream, track, requested: null, actual: inspectTrack(track) };
 }
 
-/** capabilities にある場合だけ制約を適用する（無い端末で投げさせない）。 */
+/** その機能に対応している端末でだけ設定を適用する。対応していなければ何もしない。 */
 export async function applyIfSupported(track, constraints) {
   let caps = {};
   try {
@@ -123,7 +123,7 @@ export async function applyIfSupported(track, constraints) {
   }
 }
 
-/** video 要素にストリームを載せて、最初のフレームが来るまで待つ。 */
+/** video 要素に映像をつなぎ、最初のコマが届くまで待つ。 */
 export function attachToVideo(videoEl, stream) {
   return new Promise((resolve, reject) => {
     videoEl.srcObject = stream;

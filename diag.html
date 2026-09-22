@@ -2,20 +2,22 @@
 <html lang="ja">
 <head>
 <meta charset="utf-8">
-<title>静音カメラ 診断</title>
+<title>静音カメラ 端末チェック</title>
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#101014">
 <style>
   :root { color-scheme: dark; }
   body {
-    margin: 0; padding: 16px env(safe-area-inset-right) calc(env(safe-area-inset-bottom) + 24px) env(safe-area-inset-left);
+    margin: 0;
+    padding: 16px env(safe-area-inset-right) calc(env(safe-area-inset-bottom) + 24px) env(safe-area-inset-left);
     background: #101014; color: #f2f2f7;
-    font: 14px/1.6 -apple-system, BlinkMacSystemFont, "Hiragino Sans", sans-serif;
+    font: 14px/1.7 -apple-system, BlinkMacSystemFont, "Hiragino Sans", sans-serif;
   }
   h1 { font-size: 18px; margin: 8px 0 4px; }
   p.lead { color: #a0a0a8; font-size: 13px; margin: 0 0 16px; }
   section { border: 1px solid #2a2a32; border-radius: 12px; padding: 12px; margin-bottom: 12px; background: #16161c; }
-  section h2 { font-size: 14px; margin: 0 0 8px; }
+  section h2 { font-size: 14px; margin: 0 0 6px; }
+  section p { margin: 0 0 8px; }
   button {
     appearance: none; border: 0; border-radius: 10px; padding: 11px 14px;
     background: #3a3a44; color: #fff; font-size: 14px; margin: 0 6px 6px 0;
@@ -25,37 +27,45 @@
   button.bad { background: #ff453a; }
   button:disabled { opacity: .45; }
   pre { white-space: pre-wrap; word-break: break-all; font-size: 12px; color: #c8c8d0; margin: 8px 0 0; }
+  textarea {
+    width: 100%; min-height: 160px; margin-top: 8px; font-size: 12px;
+    background: #0b0b0f; color: #c8c8d0; border: 1px solid #2a2a32; border-radius: 8px; padding: 8px;
+  }
   table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px; }
   th, td { border-bottom: 1px solid #2a2a32; padding: 5px 4px; text-align: left; }
   th { color: #a0a0a8; font-weight: 500; }
   video { width: 100%; max-height: 34vh; background: #000; border-radius: 8px; margin-top: 8px; }
   .hint { color: #a0a0a8; font-size: 12px; }
-  .ok { color: #30d158; } .ng { color: #ff453a; } .warn { color: #ffd60a; }
   a { color: #0a84ff; }
 </style>
 </head>
 <body>
-<h1>静音カメラ 診断</h1>
-<p class="lead">実機でしか分からないことを測ります。上から順に実行し、最後に結果をコピーしてください。</p>
+<h1>静音カメラ 端末チェック</h1>
+<p class="lead">
+  この端末で何ができるかを実際に測るページです。上から順に押してください。
+  最後に結果をまとめた JSON をコピーできます。
+</p>
 
 <section>
-  <h2>0. 環境</h2>
+  <h2>1. この端末の環境</h2>
+  <p class="hint">ページを開いた時点で調べたものです。操作は要りません。</p>
   <pre id="envOut">—</pre>
 </section>
 
 <section>
-  <h2>0b. 許可の持続</h2>
+  <h2>2. カメラの許可が残っているか</h2>
   <p class="hint">
-    ページを開いた直後（カメラを開く前）に判定しています。
-    <strong>アプリを一度完全に閉じてから開き直し</strong>、ここが「残っていた」になるかを見てください。
-    判定自体はカメラを開かないので、許可のダイアログは出ません。
+    カメラを開く前に調べています。アプリを完全に閉じてから開き直し、ここが
+    「残っていた」になるかどうかを見ると、許可が保持される端末かが分かります。
+    この判定ではカメラを開かないため、許可を求める表示は出ません。
   </p>
   <pre id="permOut">—</pre>
-  <button id="permBtn">もう一度判定する</button>
+  <button id="permBtn">もう一度調べる</button>
 </section>
 
 <section>
-  <h2>1. カメラを開く</h2>
+  <h2>3. カメラを開く</h2>
+  <p class="hint">以降の項目は、ここでカメラを開いてから実行してください。</p>
   <button class="primary" id="openBack">背面カメラ</button>
   <button id="openFront">前面カメラ</button>
   <video id="video" playsinline autoplay muted></video>
@@ -63,97 +73,109 @@
 </section>
 
 <section>
-  <h2>2. 解像度ラダー探索</h2>
-  <p class="hint">要求値ごとに実際に得られる解像度を調べます（20 秒ほどかかります）。</p>
-  <button id="ladderBtn">探索する</button>
+  <h2>4. 解像度の候補を順に試す</h2>
+  <p class="hint">
+    要求した解像度に対して、実際にどの解像度が返るかを調べます。20 秒ほどかかります。
+    iOS では縦横が入れ替わって返ることがあります。
+  </p>
+  <button id="ladderBtn">試す</button>
   <div id="ladderOut"></div>
 </section>
 
 <section>
-  <h2>3. トラックの能力</h2>
-  <button id="capsBtn">取得する</button>
+  <h2>5. カメラの機能</h2>
+  <p class="hint">ズームやライトを操作できるか、写真として撮れる最大の大きさはいくつかを調べます。</p>
+  <button id="capsBtn">調べる</button>
   <pre id="capsOut">—</pre>
 </section>
 
 <section>
-  <h2>4. 無音フレーム取得のベンチ</h2>
-  <p class="hint">grabFrame / VideoFrame / drawImage を各 20 回。いずれも音は鳴りません。</p>
-  <button id="benchBtn">計測する</button>
+  <h2>6. 1 コマを取り出す速さ</h2>
+  <p class="hint">
+    映像から 1 コマを取り出す方法を 3 種類、それぞれ 20 回試します。
+    どれも写真の撮影機能を使わないため、音は鳴りません。
+  </p>
+  <button id="benchBtn">測る</button>
   <div id="benchOut"></div>
 </section>
 
 <section>
-  <h2>5. 連写レート</h2>
-  <button id="fpsBtn">3 秒間 計測</button>
+  <h2>7. 連写の速さ</h2>
+  <p class="hint">合成撮影で 1 秒あたり何コマ取り込めるかの目安です。</p>
+  <button id="fpsBtn">3 秒間 測る</button>
   <pre id="fpsOut">—</pre>
 </section>
 
 <section>
-  <h2>6. 写真 API（takePhoto）<span class="warn">音が鳴る可能性あり</span></h2>
-  <p class="hint">
-    WebKit はこの API を AVCapturePhotoOutput で実装しています。日本国内向け端末では
-    シャッター音の抑止が許可されていないため、音が鳴る可能性が高い経路です。
-    <strong>音量を上げ、消音スイッチを解除した状態で</strong>試し、結果を記録してください。
+  <h2>8. 写真API で撮る</h2>
+  <p>
+    写真API は、端末内部の写真撮影の仕組みを使う撮影方法です。日本国内向けの端末では
+    本来シャッター音が鳴る経路ですが、実測では鳴りませんでした。ご自身の端末でも確かめてください。
   </p>
-  <button class="primary" id="photoBtn">① 素の takePhoto()</button>
-  <button id="photoMaxBtn">② 最大解像度を要求</button>
-  <p class="hint">①が通れば音の判定ができます。②は端末によってはカメラ接続ごと落ちます。</p>
+  <p class="hint">
+    ②は端末の上限の大きさを指定します。映像と縦横比が違うため、カメラとの接続が切れることがあります。
+    その場合は「3. カメラを開く」からやり直してください。
+  </p>
+  <button class="primary" id="photoBtn">① 大きさを指定せずに撮る</button>
+  <button id="photoMaxBtn">② 端末の上限を指定して撮る</button>
   <div id="photoOut"></div>
   <div id="soundAsk" hidden>
-    <p class="hint">シャッター音は鳴りましたか？</p>
+    <p class="hint">いま、シャッター音は鳴りましたか。</p>
     <button class="bad" id="soundYes">鳴った</button>
     <button class="good" id="soundNo">鳴らなかった</button>
   </div>
 </section>
 
 <section>
-  <h2>7. GPU と合成</h2>
-  <button id="gpuBtn">調べる</button>
-  <button id="selfTestBtn">GPU/CPU 一致テスト</button>
+  <h2>9. GPU と合成</h2>
   <p class="hint">
-    同じ入力を GPU シェーダと CPU 実装に通し、一致するか確かめます。
-    canvas と ImageBitmap の両方で試します（WebGL は ImageBitmap で上下反転の扱いが変わるため）。
+    合成処理に使う GPU の機能を調べ、10 枚の合成にかかる時間を測ります。
+    「照合」は、GPU で書いた処理と CPU で書いた処理の結果が一致するかの確認です。
   </p>
+  <button id="gpuBtn">調べる</button>
+  <button id="selfTestBtn">GPU と CPU を照合する</button>
   <pre id="gpuOut">—</pre>
 </section>
 
 <section>
-  <h2>8. 書き出し形式</h2>
+  <h2>10. 保存できる形式</h2>
   <p class="hint">
-    toBlob は未対応形式でも例外を投げず PNG を返すため、先頭バイトと再デコードで実体を確かめます。
+    対応していない形式を指定しても、ブラウザは PNG を返すだけで、エラーにはなりません。
+    そのため、書き出したデータの中身を実際に確認しています。
   </p>
   <button id="encodeBtn">調べる</button>
   <pre id="encodeOut">—</pre>
 </section>
 
 <section>
-  <h2>10. 写真API と フレーム切り出しの比較</h2>
+  <h2>11. 写真API と通常撮影の比較</h2>
   <p class="hint">
-    同じ場面を両方の経路で撮り、解像度・バイト数・所要時間・シャープネス・ノイズを並べます。
-    <strong>三脚や机に置いて固定し、明るさの変わらない被写体</strong>に向けてから実行してください。
-    写真 API は 1 枚 1 秒以上かかるため、全部で 30 秒ほどかかります。
+    同じ場面を両方の方法で撮り、解像度、ファイルの大きさ、所要時間、輪郭の量、
+    平らな部分のノイズを並べます。机などに置いて固定し、明るさの変わらないものに
+    向けてから実行してください。3 段階で 30 秒ほどかかります。
   </p>
-  <button class="primary" id="compareBtn">720p / 1080p / 4K で比較</button>
-  <button id="compareCurrentBtn">今の解像度だけ</button>
+  <button class="primary" id="compareBtn">720p、1080p、4K で比べる</button>
+  <button id="compareCurrentBtn">いまの解像度だけ</button>
   <div id="compareOut"></div>
   <div id="compareSound"></div>
 </section>
 
 <section>
-  <h2>11. 写真 API の要求サイズ上限を探る<span class="warn">カメラが落ちる場合あり</span></h2>
+  <h2>12. 写真API に指定できる大きさ</h2>
   <p class="hint">
-    映像サイズの ×1 / ×1.5 / ×2 と、能力値の最大を順に要求し、どこから落ちるかを調べます。
-    落ちたら自動でカメラを開き直します。
+    映像の 1 倍、1.5 倍、2 倍と、端末の上限を順に指定し、どこから失敗するかを調べます。
+    カメラとの接続が切れた場合は自動で開き直します。
   </p>
-  <button id="limitBtn">探索する</button>
+  <button id="limitBtn">調べる</button>
   <div id="limitOut"></div>
 </section>
 
 <section>
-  <h2>9. 結果</h2>
+  <h2>13. 結果</h2>
+  <p class="hint">ここまでの結果をまとめたものです。コピーして記録に残せます。</p>
   <button class="primary" id="copyBtn">結果をコピー</button>
-  <button id="shareBtn">共有</button>
-  <button id="backBtn">カメラへ戻る</button>
+  <button id="shareBtn">共有する</button>
+  <button id="backBtn">カメラに戻る</button>
   <pre id="resultOut">—</pre>
 </section>
 

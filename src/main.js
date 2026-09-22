@@ -1,5 +1,7 @@
-// 画面とモードの制御。ページは一度も再読み込みしない（iOS のカメラ許可は
-// リロードのたびに聞き直されるため、単一ページのまま状態だけ切り替える）。
+// 画面の制御。
+//
+// このページは一度読み込んだあと再読み込みしない。iOS ではページを読み込み直すたびに
+// カメラの許可を求められるため、表示の切り替えだけで操作を完結させている。
 
 import {
   openStream, openBestStream, stopStream, inspectTrack, attachToVideo, applyIfSupported,
@@ -13,8 +15,10 @@ import {
   canvasToBlob, saveImage, timestampName, probeEncoders, EXTENSION_OF_TYPE,
 } from './encode.js';
 import { inspectCameraPermission } from './permission.js';
+import { APP_VERSION } from './version.js';
 
 const $ = (id) => document.getElementById(id);
+const sleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
 
 const el = {
   video: $('preview'),
@@ -24,6 +28,7 @@ const el = {
   flip: $('flip'),
   thumb: $('thumb'),
   sheet: $('sheet'),
+  backdrop: $('sheetBackdrop'),
   overlay: $('overlay'),
   shot: $('shot'),
   shotMeta: $('shotMeta'),
@@ -33,59 +38,91 @@ const el = {
   progressBar: $('progressBar'),
   start: $('start'),
   startNote: $('startNote'),
-  deviceInfo: $('deviceInfo'),
+  permissionInfo: $('permissionInfo'),
+  buildInfo: $('buildInfo'),
+  storageInfo: $('storageInfo'),
 };
 
-const SETTINGS_KEY = 'ios-cam.settings.v1';
+const SETTINGS_KEY = 'ios-cam.settings.v2';
 
 const state = {
   stream: null,
   track: null,
-  facingMode: 'environment',
-  mode: 'single',
   busy: false,
   lastBlob: null,
-  lastMeta: '',
+  lastShotUrl: null,
+  thumbUrl: null,
   wakeLock: null,
-  photoWarned: false,
+  permission: null,
+  probe: null,
+  encoders: null,
+  storageAvailable: false,
+  watchdogRunning: false,
   settings: {
-    frames: 12,
+    mode: 'frame',
+    facingMode: 'environment',
+    zoom: 1,
+    frames: 8,
+    highFps: true,
     drizzle: false,
-    sharpen: 0.35,
+    sharpen: 0.25,
     resolution: 'auto',
     quality: 0.95,
-    grid: false,
-    highFps: false,
     format: 'image/jpeg',
+    grid: false,
+    photoNoticeShown: false,
   },
-  encoders: null,
-  probe: null,
-  permission: null,
 };
+
+// ---------- 設定の保存 ----------
+
+function checkStorage() {
+  try {
+    const probe = `${SETTINGS_KEY}.probe`;
+    localStorage.setItem(probe, '1');
+    const ok = localStorage.getItem(probe) === '1';
+    localStorage.removeItem(probe);
+    return ok;
+  } catch {
+    return false;
+  }
+}
 
 function loadSettings() {
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
     if (raw) Object.assign(state.settings, JSON.parse(raw));
-  } catch { /* 読めなければ既定値のまま */ }
+  } catch {
+    // 読めない場合は初期値のまま使う
+  }
 }
 
 function saveSettings() {
   try {
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(state.settings));
-  } catch { /* プライベートブラウズでは保存できないことがある */ }
+  } catch {
+    // 保存できない端末では、その場の変更だけが有効になる
+  }
 }
 
+// ---------- 画面の小道具 ----------
+
 let toastTimer = null;
-function toast(message, ms = 2200) {
+function toast(message, ms = 2400) {
   el.toast.textContent = message;
   el.toast.classList.add('show');
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => el.toast.classList.remove('show'), ms);
 }
 
-function setStatus(text, strong = '') {
-  el.status.innerHTML = strong ? `${text} <strong>${strong}</strong>` : text;
+function setStatus(text) {
+  el.status.textContent = text;
+}
+
+function updateStatus() {
+  const info = state.track ? inspectTrack(state.track) : null;
+  const size = info ? `${info.width}×${info.height}` : '準備中';
+  setStatus(`${size}　${modeLabel()}`);
 }
 
 function setBusy(busy, label = '') {
@@ -111,32 +148,32 @@ function setProgress(ratio, label) {
 async function startCamera() {
   stopCamera();
   resetImageCaptureCache();
-  setStatus('起動中…');
+  setStatus('カメラを起動しています');
   try {
     let opened;
     if (state.settings.resolution === 'auto') {
-      opened = await openBestStream({ facingMode: state.facingMode });
+      opened = await openBestStream({ facingMode: state.settings.facingMode });
     } else {
       const [width, height] = state.settings.resolution.split('x').map(Number);
-      const stream = await openStream({ facingMode: state.facingMode, width, height });
-      const track = stream.getVideoTracks()[0];
-      opened = { stream, track, actual: inspectTrack(track) };
+      const stream = await openStream({ facingMode: state.settings.facingMode, width, height });
+      opened = { stream, track: stream.getVideoTracks()[0] };
     }
     state.stream = opened.stream;
     state.track = opened.track;
     await attachToVideo(el.video, state.stream);
 
     const info = inspectTrack(state.track);
-    el.video.classList.toggle('mirrored', info.facingMode === 'user' || state.facingMode === 'user');
-    setStatus(`${info.width}×${info.height}`, modeLabel());
+    el.video.classList.toggle('mirrored', state.settings.facingMode === 'user');
     syncCapabilityControls(info.capabilities);
+    await restoreZoom();
 
-    // どの取得経路が速く、正しい向きを返すかは端末依存なので一度だけ測る
+    // どの取得方法が速く、正しい向きで返るかは端末によって違うため、起動時に一度だけ測る
     state.probe = await probeBestPath(el.video, state.track).catch(() => null);
-    el.deviceInfo.textContent = describeDevice(info);
+    el.buildInfo.textContent = describeBuild(info);
+
+    updateStatus();
     el.shutter.disabled = false;
     el.start.classList.add('hidden');
-    updatePermissionInfo();
     requestWakeLock();
   } catch (err) {
     handleCameraError(err);
@@ -150,34 +187,29 @@ function stopCamera() {
   el.shutter.disabled = true;
 }
 
-/** トラックが生きているか。死んでいれば開き直しが要る。 */
 function isStreamAlive() {
   return state.track?.readyState === 'live';
 }
 
-/** 起動時に調べた許可の状態を設定シートに出す。 */
-function updatePermissionInfo() {
-  const info = $('permissionInfo');
-  if (!info) return;
-  const p = state.permission;
-  if (!p) {
-    info.textContent = '起動時の判定: 未取得';
-    return;
+function handleCameraError(err) {
+  const name = err?.name ?? '';
+  let message = `カメラを開けませんでした。${err?.message ?? err}`;
+  if (name === 'NotAllowedError') {
+    message = 'カメラの使用が許可されていません。設定アプリの「アプリ」から Safari を開き、'
+      + '「カメラ」を「許可」または「確認」にしてください。';
+  } else if (name === 'NotFoundError') {
+    message = 'カメラが見つかりませんでした。';
+  } else if (name === 'NotReadableError') {
+    message = '他のアプリがカメラを使っている可能性があります。';
   }
-  const source = {
-    'permissions-api': 'Permissions API',
-    'device-labels': 'デバイス名が見えている',
-    denied: '拒否されている',
-    unknown: '判定できない',
-  }[p.reason] ?? p.reason;
-  info.textContent = p.granted
-    ? `起動時の判定: 前回の許可が残っていた（${source}）`
-    : `起動時の判定: 許可は残っていなかった（${source}）`;
+  el.start.classList.remove('hidden');
+  el.startNote.textContent = message;
+  setStatus('カメラを使えません');
 }
 
 /**
- * 解像度を変える。まず applyConstraints で試し、駄目なときだけ開き直す。
- * ストリームを作り直さなければ、許可の再取得も起きない。
+ * 解像度を変える。まず制約の適用で試し、届かなかったときだけ開き直す。
+ * ストリームを作り直さなければ、許可を求められることもない。
  */
 async function changeResolution() {
   if (!isStreamAlive() || state.settings.resolution === 'auto') {
@@ -188,58 +220,83 @@ async function changeResolution() {
   try {
     await state.track.applyConstraints({ width: { ideal: width }, height: { ideal: height } });
     const info = inspectTrack(state.track);
-    // iOS は縦横を入れ替えて返すので、画素数で近さを判定する
+    // iOS は縦横を入れ替えて返すことがあるため、画素数の近さで判定する
     const wanted = width * height;
     const got = info.width * info.height;
-    if (Math.abs(got - wanted) / wanted > 0.25) throw new Error('要求に届きませんでした');
-    setStatus(`${info.width}×${info.height}`, modeLabel());
-    el.deviceInfo.textContent = describeDevice(info);
-    toast(`${info.width}×${info.height} に変更しました`);
+    if (Math.abs(got - wanted) / wanted > 0.25) throw new Error('要求した解像度に届きませんでした');
+    updateStatus();
+    el.buildInfo.textContent = describeBuild(info);
+    toast(`${info.width}×${info.height} になりました`);
   } catch {
     await startCamera();
   }
 }
 
-function handleCameraError(err) {
-  const name = err?.name ?? '';
-  let message = `カメラを開けません: ${err?.message ?? err}`;
-  if (name === 'NotAllowedError') {
-    message = 'カメラが許可されていません。Safari の「ぁあ」→ Web サイトの設定 → カメラ を「許可」にしてください。';
-  } else if (name === 'NotFoundError') {
-    message = 'カメラが見つかりません。';
-  } else if (name === 'NotReadableError') {
-    message = '他のアプリがカメラを使用中の可能性があります。';
+/**
+ * 映像が止まっていないか確かめ、止まっていれば立て直す。
+ * 写真API での撮影後や、バックグラウンドから戻ったあとに呼ぶ。
+ */
+async function ensurePreviewRunning() {
+  if (state.watchdogRunning) return;
+  state.watchdogRunning = true;
+  try {
+    if (!isStreamAlive()) {
+      await startCamera();
+      return;
+    }
+    const before = el.video.currentTime;
+    await sleep(2000);
+    if (el.video.currentTime > before) return;
+
+    await el.video.play().catch(() => {});
+    const afterPlay = el.video.currentTime;
+    await sleep(800);
+    if (el.video.currentTime > afterPlay) return;
+
+    toast('映像が止まったため、カメラを開き直します');
+    await startCamera();
+  } finally {
+    state.watchdogRunning = false;
   }
-  el.start.classList.remove('hidden');
-  el.startNote.textContent = message;
-  setStatus('エラー');
-  toast(message, 4000);
 }
 
-function describeDevice(info) {
+function describeBuild(info) {
   const paths = detectSilentPaths();
-  const available = Object.entries(paths).filter(([, ok]) => ok).map(([k]) => k).join('/');
-  const chosen = getPreferredPath();
-  const timing = state.probe?.results
-    ?.filter((r) => r.usable)
-    .map((r) => `${r.path} ${r.median.toFixed(1)}ms`)
-    .join('・');
-  return `${info.width}×${info.height} @${Math.round(info.frameRate)}fps`
-    + `・経路 ${available}（採用: ${chosen ?? '—'}）`
-    + (timing ? `・${timing}` : '')
-    + (isPhotoModeAvailable() ? '・写真API あり' : '・写真API なし');
+  const available = Object.entries(paths).filter(([, ok]) => ok).map(([key]) => key).join('、');
+  const chosen = getPreferredPath() ?? '未判定';
+  return `版 ${APP_VERSION}　${info.width}×${info.height}／毎秒 ${Math.round(info.frameRate)} コマ`
+    + `　取得方法 ${chosen}（使えるもの: ${available}）`
+    + `　写真API ${isPhotoModeAvailable() ? 'あり' : 'なし'}`;
 }
+
+function updatePermissionInfo() {
+  const permission = state.permission;
+  if (!permission) {
+    el.permissionInfo.textContent = '起動時の判定: 未取得';
+    return;
+  }
+  const source = {
+    'permissions-api': 'Permissions API による判定',
+    'device-labels': 'カメラ名が読めたことによる判定',
+    denied: '拒否されています',
+    unknown: '判定できませんでした',
+  }[permission.reason] ?? permission.reason;
+  el.permissionInfo.textContent = permission.granted
+    ? `起動時の判定: 前回の許可が残っていました（${source}）`
+    : `起動時の判定: 許可は残っていませんでした（${source}）`;
+}
+
+// ---------- カメラの機能 ----------
 
 function syncZoomButtons(caps) {
   const holder = $('zooms');
-  holder.innerHTML = '';
+  holder.textContent = '';
   const zoom = caps?.zoom;
   if (!zoom || typeof zoom.min !== 'number') {
     holder.hidden = true;
     return;
   }
-  const current = state.track?.getSettings?.().zoom ?? 1;
-  const steps = [0.5, 1, 2, 3].filter((v) => v >= zoom.min && v <= (zoom.max ?? v));
+  const steps = [0.5, 1, 2, 3].filter((value) => value >= zoom.min && value <= (zoom.max ?? value));
   if (steps.length < 2) {
     holder.hidden = true;
     return;
@@ -247,28 +304,38 @@ function syncZoomButtons(caps) {
   holder.hidden = false;
   for (const value of steps) {
     const button = document.createElement('button');
-    button.textContent = `${value}×`;
-    button.setAttribute('aria-pressed', String(Math.abs(current - value) < 0.05));
-    button.addEventListener('click', async () => {
-      const result = await applyIfSupported(state.track, { zoom: value });
-      if (!result.applied) {
-        toast('この端末ではズームを変えられません');
-        return;
-      }
-      for (const other of holder.children) other.setAttribute('aria-pressed', 'false');
-      button.setAttribute('aria-pressed', 'true');
-      const slider = $('zoomInput');
-      slider.value = value;
-      $('zoomValue').textContent = `${value.toFixed(1)}×`;
-    });
+    button.textContent = `${value}倍`;
+    button.setAttribute('aria-pressed', String(Math.abs(state.settings.zoom - value) < 0.05));
+    button.addEventListener('click', () => applyZoom(value, holder, button));
     holder.appendChild(button);
   }
 }
 
+async function applyZoom(value, holder, button) {
+  const result = await applyIfSupported(state.track, { zoom: value });
+  if (!result.applied) {
+    toast('この端末ではズームを変えられません');
+    return;
+  }
+  state.settings.zoom = value;
+  saveSettings();
+  if (holder && button) {
+    for (const other of holder.children) other.setAttribute('aria-pressed', 'false');
+    button.setAttribute('aria-pressed', 'true');
+  }
+  $('zoomInput').value = value;
+  $('zoomValue').textContent = `${value.toFixed(1)}倍`;
+}
+
+async function restoreZoom() {
+  if (state.settings.zoom === 1) return;
+  await applyIfSupported(state.track, { zoom: state.settings.zoom });
+  syncZoomButtons(inspectTrack(state.track).capabilities);
+}
+
 function syncCapabilityControls(caps) {
-  const zoomRow = $('zoomRow');
-  const torchRow = $('torchRow');
   syncZoomButtons(caps);
+  const zoomRow = $('zoomRow');
   if (caps?.zoom && typeof caps.zoom.min === 'number') {
     zoomRow.hidden = false;
     const input = $('zoomInput');
@@ -276,43 +343,49 @@ function syncCapabilityControls(caps) {
     input.max = Math.min(caps.zoom.max ?? 5, 8);
     input.step = caps.zoom.step || 0.1;
     input.value = state.track.getSettings().zoom ?? caps.zoom.min;
-    $('zoomValue').textContent = `${Number(input.value).toFixed(1)}×`;
+    $('zoomValue').textContent = `${Number(input.value).toFixed(1)}倍`;
   } else {
     zoomRow.hidden = true;
   }
-  torchRow.hidden = !(caps && 'torch' in caps);
+  $('torchRow').hidden = !(caps && 'torch' in caps);
 }
 
 // ---------- 撮影 ----------
 
 function modeLabel() {
-  if (state.mode === 'single') return '即写';
-  if (state.mode === 'stack') return `合成×${state.settings.frames}`;
-  return '単写';
+  if (state.settings.mode === 'frame') return '通常';
+  if (state.settings.mode === 'stack') return `合成 ${state.settings.frames} 枚`;
+  return '写真API';
 }
 
 function setMode(mode) {
-  state.mode = mode;
-  $('modeSingle').setAttribute('aria-pressed', String(mode === 'single'));
+  state.settings.mode = mode;
+  saveSettings();
+  $('modeFrame').setAttribute('aria-pressed', String(mode === 'frame'));
   $('modeStack').setAttribute('aria-pressed', String(mode === 'stack'));
   $('modePhoto').setAttribute('aria-pressed', String(mode === 'photo'));
-  const info = state.track ? inspectTrack(state.track) : null;
-  setStatus(info ? `${info.width}×${info.height}` : '待機中', modeLabel());
+  updateStatus();
+
+  if (mode === 'photo' && !state.settings.photoNoticeShown) {
+    toast('写真API は実験的な撮影方法です。端末によっては音が鳴る可能性があります。', 5000);
+    state.settings.photoNoticeShown = true;
+    saveSettings();
+  }
 }
 
 async function shoot() {
   if (!state.track || state.busy) return;
   try {
-    if (state.mode === 'single') await shootSingle();
-    else if (state.mode === 'stack') await shootStack();
+    if (state.settings.mode === 'frame') await shootFrame();
+    else if (state.settings.mode === 'stack') await shootStack();
     else await shootPhotoApi();
   } catch (err) {
     setBusy(false);
-    toast(`撮影に失敗しました: ${err?.message ?? err}`, 3500);
+    toast(`撮影できませんでした。${err?.message ?? err}`, 3500);
   }
 }
 
-async function shootSingle() {
+async function shootFrame() {
   setBusy(true);
   const started = performance.now();
   const { canvas, width, height, path, colorSpace } = await grabToCanvas(el.video, state.track);
@@ -321,145 +394,150 @@ async function shootSingle() {
     quality: state.settings.quality,
   });
   setBusy(false);
-  showResult(blob, `${width}×${height}・${path}・${colorSpace}・${Math.round(performance.now() - started)}ms`);
+  showResult(blob, [
+    `${width}×${height}`,
+    `通常撮影（${path}／${colorSpace}）`,
+    `${Math.round(performance.now() - started)} ミリ秒`,
+  ]);
 }
 
 async function shootStack() {
   const frames = state.settings.frames;
-  setBusy(true, `連写中… 0/${frames}`);
+  setBusy(true, `連写しています 0 / ${frames}`);
   const started = performance.now();
 
-  // 撮影時間が短いほど手ぶれの累積が減るので、可能なら一時的に 60fps を要求する
-  let restoreFrameRate = null;
+  // 撮影が短いほど手ぶれの積み重ねが減るため、対応する端末では毎秒 60 コマを要求する
+  let previousFrameRate = null;
   if (state.settings.highFps) {
     const before = state.track.getSettings?.().frameRate;
     const applied = await applyIfSupported(state.track, { frameRate: 60 });
-    if (applied.applied && before) restoreFrameRate = before;
+    if (applied.applied && before) previousFrameRate = before;
   }
 
   const result = await captureStack(el.video, state.track, {
     frames,
     scale: state.settings.drizzle ? 2 : 1,
     sharpen: state.settings.sharpen,
-    onProgress: ({ used }) => setProgress(used / frames, `連写中… ${used}/${frames}`),
+    onProgress: ({ used }) => setProgress(used / frames, `連写しています ${used} / ${frames}`),
   });
-  setProgress(1, '書き出し中…');
+
+  setProgress(1, '画像を書き出しています');
   const blob = await canvasToBlob(result.canvas, {
     type: state.settings.format,
     quality: state.settings.quality,
   });
   result.stacker?.dispose?.();
-  if (restoreFrameRate) await applyIfSupported(state.track, { frameRate: restoreFrameRate });
+  if (previousFrameRate) await applyIfSupported(state.track, { frameRate: previousFrameRate });
   setBusy(false);
-  const elapsed = Math.round(performance.now() - started);
+
   if (result.scaleReduced) {
-    toast('解像度が高いため 2 倍格子は見送りました（メモリ保護）', 3200);
+    toast('解像度が高いため、2 倍にする処理は行いませんでした');
   }
-  showResult(
-    blob,
-    `${result.width}×${result.height}・${result.used}/${result.total}枚採用`
-    + `・${result.kind}${result.scale > 1 ? `・${result.scale}倍格子` : ''}・${elapsed}ms`,
-  );
+  showResult(blob, [
+    `${result.width}×${result.height}`,
+    `合成撮影（${result.used} / ${result.total} 枚を採用${result.scale > 1 ? '、解像度 2 倍' : ''}）`,
+    `${Math.round(performance.now() - started)} ミリ秒`,
+  ]);
 }
 
 async function shootPhotoApi() {
   if (!isPhotoModeAvailable()) {
-    toast('この端末の Safari は写真 API に対応していません', 3000);
+    toast('この端末の Safari は写真API に対応していません', 3000);
     return;
   }
-  if (!state.photoWarned) {
-    const ok = window.confirm(
-      '単写は端末内部の写真撮影処理（AVCapturePhotoOutput）を使います。\n\n'
-      + '手元の iPhone（iOS 18.7）では無音でしたが、WebKit 側に音を止める処理は無く、'
-      + '機種や iOS の版によっては鳴る可能性があります。\n'
-      + '初めて使うときは、音量を上げた状態で一度試してください。\n\n'
-      + '・解像度は映像と同じ（高解像にはならない）\n'
-      + '・撮影に 0.3〜1.4 秒かかる\n'
-      + '・モードに入って 1 枚目は焦点や露出が甘いことがある\n\n'
-      + '続けますか？',
-    );
-    if (!ok) return;
-    state.photoWarned = true;
-  }
-  setBusy(true, '撮影中…');
+  setBusy(true, '撮影しています');
   const started = performance.now();
   try {
-    // サイズは要求しない。実測では要求しても映像と同じ大きさに丸められ、
-    // 能力値の最大を要求したときだけカメラ接続が落ちた。
+    // 大きさは指定しない。指定しても映像と同じ大きさに調整されるうえ、
+    // 端末の上限を指定するとカメラとの接続が切れることがある。
     const { blob, width, height } = await takePhotoBlob(state.track);
     setBusy(false);
-    showResult(blob, `${width}×${height}・単写（写真API）・${Math.round(performance.now() - started)}ms`);
+    showResult(blob, [
+      `${width}×${height}`,
+      '写真API 撮影',
+      `${Math.round(performance.now() - started)} ミリ秒`,
+    ]);
   } catch (err) {
     setBusy(false);
-    const dead = !isTrackAlive(state.track);
-    toast(
-      `写真 API が失敗しました: ${err?.message ?? err}`
-      + (dead ? '（カメラを開き直します）' : ''),
-      4500,
-    );
-    // IPC が切れるとトラックごと死ぬので、開き直して撮影を続けられるようにする
-    if (dead) await startCamera();
+    toast(`写真API で撮影できませんでした。${err?.message ?? err}`, 4000);
+  } finally {
+    // 撮影のあとに映像が止まることがあるため、止まっていれば立て直す
+    ensurePreviewRunning();
   }
 }
 
-// ---------- 結果 ----------
+// ---------- 撮影結果 ----------
 
-function showResult(blob, meta) {
+function showResult(blob, parts) {
   state.lastBlob = blob;
-  state.lastMeta = meta;
-  const url = URL.createObjectURL(blob);
-  el.shot.src = url;
-  el.shot.onload = () => URL.revokeObjectURL(url);
-  el.shotMeta.textContent = `${meta}・${(blob.size / 1024 / 1024).toFixed(2)}MB`;
+  if (state.lastShotUrl) URL.revokeObjectURL(state.lastShotUrl);
+  state.lastShotUrl = URL.createObjectURL(blob);
+  el.shot.src = state.lastShotUrl;
+  el.shotMeta.textContent = `${parts.join('　')}　${(blob.size / 1024 / 1024).toFixed(2)} MB`;
   el.overlay.classList.add('open');
   updateThumb(blob);
 }
 
 function updateThumb(blob) {
-  const url = URL.createObjectURL(blob);
-  el.thumb.innerHTML = '';
-  const img = document.createElement('img');
-  img.src = url;
-  img.alt = '';
-  img.onload = () => URL.revokeObjectURL(url);
-  el.thumb.appendChild(img);
+  if (state.thumbUrl) URL.revokeObjectURL(state.thumbUrl);
+  state.thumbUrl = URL.createObjectURL(blob);
+  el.thumb.textContent = '';
+  const image = document.createElement('img');
+  image.src = state.thumbUrl;
+  image.alt = '';
+  el.thumb.appendChild(image);
 }
 
 async function saveLast() {
   if (!state.lastBlob) return;
-  const ext = EXTENSION_OF_TYPE[state.lastBlob.type] ?? 'jpg';
-  const result = await saveImage(state.lastBlob, timestampName(ext));
-  if (result === 'shared') toast('共有シートから「画像を保存」を選んでください');
-  else if (result === 'downloaded') toast('ダウンロードしました');
+  const extension = EXTENSION_OF_TYPE[state.lastBlob.type] ?? 'jpg';
+  const result = await saveImage(state.lastBlob, timestampName(extension));
+  if (result === 'shared') {
+    el.overlay.classList.remove('open');
+    toast('共有メニューの「画像を保存」で写真アプリに保存できます');
+  } else if (result === 'downloaded') {
+    el.overlay.classList.remove('open');
+    toast('ダウンロードしました');
+  }
 }
 
-// ---------- 画面のライフサイクル ----------
+// ---------- 画面の状態 ----------
 
 async function requestWakeLock() {
   try {
     if ('wakeLock' in navigator) {
       state.wakeLock = await navigator.wakeLock.request('screen');
     }
-  } catch { /* 取れなくても支障はない */ }
+  } catch {
+    // 取得できなくても撮影には影響しない
+  }
 }
 
-// バックグラウンドに回ってもストリームは止めない。
-// 止めて取り直すと getUserMedia をもう一度呼ぶことになり、許可を聞かれる場合があるため。
-// iOS 側がトラックを終了させたときだけ開き直す。
-document.addEventListener('visibilitychange', async () => {
+function openSheet() {
+  el.sheet.classList.add('open');
+  el.backdrop.hidden = false;
+  requestAnimationFrame(() => el.backdrop.classList.add('open'));
+}
+
+function closeSheet() {
+  el.sheet.classList.remove('open');
+  el.backdrop.classList.remove('open');
+  setTimeout(() => { el.backdrop.hidden = true; }, 250);
+}
+
+// バックグラウンドに回ってもストリームは止めない。止めて取り直すと
+// getUserMedia をもう一度呼ぶことになり、許可を求められる場合があるため。
+document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible') return;
-  if (el.start.classList.contains('hidden') && !isStreamAlive()) {
-    await startCamera();
-  } else if (isStreamAlive()) {
-    // 復帰直後に映像が止まって見えることがあるので、再生だけ促す
-    el.video.play().catch(() => {});
+  if (el.start.classList.contains('hidden')) {
     requestWakeLock();
+    ensurePreviewRunning();
   }
 });
 
-// ---------- 入力の結線 ----------
+// ---------- 設定画面 ----------
 
-/** 端末が本当に符号化できる形式だけを選択肢に出す。 */
+/** この端末で実際に書き出せた形式だけを選択肢にする。 */
 async function populateFormats() {
   const select = $('formatSelect');
   const results = await probeEncoders().catch(() => null);
@@ -468,16 +546,16 @@ async function populateFormats() {
 
   const labels = {
     'image/jpeg': 'JPEG',
-    'image/heic': 'HEIC（iOS 標準・同画質で小さい）',
+    'image/heic': 'HEIC',
     'image/avif': 'AVIF',
     'image/webp': 'WebP',
-    'image/png': 'PNG（無圧縮に近い・巨大）',
+    'image/png': 'PNG（大きくなります）',
   };
   const supported = Object.entries(results)
-    .filter(([, r]) => r.supported)
+    .filter(([, result]) => result.supported)
     .map(([type]) => type);
 
-  select.innerHTML = '';
+  select.textContent = '';
   for (const type of ['image/jpeg', 'image/heic', 'image/avif', 'image/webp', 'image/png']) {
     if (!supported.includes(type)) continue;
     const option = document.createElement('option');
@@ -490,6 +568,12 @@ async function populateFormats() {
     saveSettings();
   }
   select.value = state.settings.format;
+  syncQualityRow();
+}
+
+function syncQualityRow() {
+  // PNG は画質の指定が効かないため、選んでいるあいだは隠す
+  $('qualityRow').hidden = state.settings.format === 'image/png';
 }
 
 function bindSettings() {
@@ -509,15 +593,16 @@ function bindSettings() {
   highFps.checked = state.settings.highFps;
   format.value = state.settings.format;
   $('framesValue').textContent = state.settings.frames;
-  $('sharpenValue').textContent = state.settings.sharpen;
-  $('qualityValue').textContent = state.settings.quality;
+  $('sharpenValue').textContent = Number(state.settings.sharpen).toFixed(2);
+  $('qualityValue').textContent = Number(state.settings.quality).toFixed(2);
   el.grid.classList.toggle('on', state.settings.grid);
+  syncQualityRow();
 
   frames.addEventListener('input', () => {
     state.settings.frames = Number(frames.value);
     $('framesValue').textContent = frames.value;
     saveSettings();
-    setMode(state.mode);
+    updateStatus();
   });
   sharpen.addEventListener('input', () => {
     state.settings.sharpen = Number(sharpen.value);
@@ -533,13 +618,6 @@ function bindSettings() {
     state.settings.drizzle = drizzle.checked;
     saveSettings();
   });
-  resolution.addEventListener('change', async () => {
-    state.settings.resolution = resolution.value;
-    saveSettings();
-    // ストリームを作り直すと許可を聞かれることがあるので、まず制約の適用で済ませる
-    await changeResolution();
-  });
-
   highFps.addEventListener('change', () => {
     state.settings.highFps = highFps.checked;
     saveSettings();
@@ -547,24 +625,28 @@ function bindSettings() {
   format.addEventListener('change', () => {
     state.settings.format = format.value;
     saveSettings();
+    syncQualityRow();
+  });
+  resolution.addEventListener('change', async () => {
+    state.settings.resolution = resolution.value;
+    saveSettings();
+    await changeResolution();
   });
 
-  $('zoomInput').addEventListener('input', async (event) => {
+  $('zoomInput').addEventListener('input', (event) => {
     const value = Number(event.target.value);
-    $('zoomValue').textContent = `${value.toFixed(1)}×`;
-    if (state.track) await applyIfSupported(state.track, { zoom: value });
+    $('zoomValue').textContent = `${value.toFixed(1)}倍`;
+    if (state.track) applyZoom(value);
   });
   $('torchInput').addEventListener('change', async (event) => {
     if (!state.track) return;
     const result = await applyIfSupported(state.track, { torch: event.target.checked });
-    if (!result.applied) toast('この端末ではライトを制御できません');
+    if (!result.applied) toast('この端末ではライトを操作できません');
   });
   $('diagLink').addEventListener('click', () => {
-    // 別ページへ移ると文書が変わり、戻ったときに許可を取り直しになることがある
     const ok = window.confirm(
-      '診断ページへ移動します。\n'
-      + 'アプリから離れるため、戻ったときにカメラの許可をもう一度聞かれる場合があります。\n\n'
-      + '移動しますか？',
+      '端末の性能を調べるページを開きます。\n'
+      + 'このページから離れるため、戻るときにカメラの許可を求められることがあります。',
     );
     if (ok) window.location.href = './diag.html';
   });
@@ -574,14 +656,19 @@ function bindUi() {
   $('startBtn').addEventListener('click', startCamera);
   el.shutter.addEventListener('click', shoot);
   el.flip.addEventListener('click', async () => {
-    state.facingMode = state.facingMode === 'environment' ? 'user' : 'environment';
+    state.settings.facingMode = state.settings.facingMode === 'environment' ? 'user' : 'environment';
+    saveSettings();
     await startCamera();
   });
-  $('modeSingle').addEventListener('click', () => setMode('single'));
+  $('modeFrame').addEventListener('click', () => setMode('frame'));
   $('modeStack').addEventListener('click', () => setMode('stack'));
   $('modePhoto').addEventListener('click', () => setMode('photo'));
-  $('settingsBtn').addEventListener('click', () => el.sheet.classList.toggle('open'));
-  $('closeSheet').addEventListener('click', () => el.sheet.classList.remove('open'));
+  $('settingsBtn').addEventListener('click', () => {
+    if (el.sheet.classList.contains('open')) closeSheet();
+    else openSheet();
+  });
+  $('closeSheet').addEventListener('click', closeSheet);
+  el.backdrop.addEventListener('click', closeSheet);
   $('gridBtn').addEventListener('click', () => {
     state.settings.grid = !state.settings.grid;
     el.grid.classList.toggle('on', state.settings.grid);
@@ -592,49 +679,65 @@ function bindUi() {
   el.thumb.addEventListener('click', () => {
     if (state.lastBlob) el.overlay.classList.add('open');
   });
-  // 誤操作での拡大を抑える
-  document.addEventListener('gesturestart', (e) => e.preventDefault());
+  // 二本指などで画面が拡大するのを防ぐ
+  document.addEventListener('gesturestart', (event) => event.preventDefault());
 }
 
 function registerServiceWorker() {
   if (!('serviceWorker' in navigator)) return;
-  window.addEventListener('load', () => {
-    navigator.serviceWorker.register('./sw.js').catch(() => { /* オフライン化は任意 */ });
+  window.addEventListener('load', async () => {
+    try {
+      const registration = await navigator.serviceWorker.register('./sw.js');
+      await registration.update();
+      registration.addEventListener('updatefound', () => {
+        const installing = registration.installing;
+        if (!installing) return;
+        installing.addEventListener('statechange', () => {
+          if (installing.state === 'installed' && navigator.serviceWorker.controller) {
+            toast('新しい版があります。次に起動したときに切り替わります。', 4000);
+          }
+        });
+      });
+    } catch {
+      // 登録できなくても通信できる限り動作する
+    }
   });
 }
 
-/**
- * 起動処理。
- * 許可が残っているなら開始ボタンを待たずにカメラを開く（タップ 1 回ぶん省ける）。
- * 判定は getUserMedia を呼ばずに行うので、これ自体でプロンプトは出ない。
- */
+// ---------- 起動 ----------
+
 async function boot() {
+  el.buildInfo.textContent = `版 ${APP_VERSION}`;
+  state.storageAvailable = checkStorage();
+  el.storageInfo.textContent = state.storageAvailable
+    ? '設定の保存: この端末では保存できます'
+    : '設定の保存: この端末では保存できません。起動のたびに初期値に戻ります。';
+
+  loadSettings();
+  bindSettings();
+  bindUi();
+  setMode(state.settings.mode);
+  registerServiceWorker();
+  populateFormats();
+
   if (!navigator.mediaDevices?.getUserMedia) {
-    el.startNote.textContent = 'この環境ではカメラ API が使えません。HTTPS で開いているか確認してください。';
+    el.startNote.textContent = 'この環境ではカメラを使えません。https で開いているか確認してください。';
     $('startBtn').disabled = true;
     return;
   }
 
-  const permission = await inspectCameraPermission();
-  state.permission = permission;
+  state.permission = await inspectCameraPermission();
+  updatePermissionInfo();
 
-  if (permission.granted) {
-    el.startNote.textContent = '前回の許可が残っています。カメラを開いています…';
-    await startCamera();
+  if (state.permission.permissionState === 'denied') {
+    el.startNote.textContent = 'カメラの使用が拒否されています。設定アプリの「アプリ」から Safari を開き、'
+      + '「カメラ」を「許可」または「確認」にしてください。';
     return;
   }
-  if (permission.permissionState === 'denied') {
-    el.startNote.textContent = 'カメラが拒否されています。'
-      + '設定 → アプリ → Safari → カメラ を「許可」または「確認」に戻してください。';
-    return;
-  }
-  el.startNote.textContent = '';
+
+  // 起動と同時にカメラを要求する。許可が残っていればそのまま映像が出る。
+  // 残っていなければ、この時点で許可を尋ねる画面が出る。
+  await startCamera();
 }
 
-loadSettings();
-bindSettings();
-bindUi();
-setMode('single');
-registerServiceWorker();
-populateFormats();
 boot();

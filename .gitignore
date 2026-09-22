@@ -1,3 +1,7 @@
+node_modules
 node_modules/
+
+# 依存はテスト用の playwright だけで、実行時の依存が無いため固定していない
 package-lock.json
+
 .DS_Store

@@ -1,10 +1,10 @@
-// 位置合わせの単体テスト。合成画像を使い、既知のずれを復元できるか確認する。
+// 位置合わせの単体テスト。自分で作った画像を使い、与えたずれを正しく求められるか確かめる。
 import assert from 'node:assert/strict';
 import {
   toLuma, buildPyramid, estimateShift, parabolicOffset, isUsableShift,
 } from '../src/pipeline/align.js';
 
-/** 非周期のなめらかな模様。値ノイズを双線形補間で拡大して作る。 */
+/** 繰り返しのない滑らかな模様。粗い乱数を双線形補間で引き伸ばして作る。 */
 function makeScene(width, height, seed = 1) {
   const gridW = 17;
   const gridH = 17;
@@ -54,37 +54,37 @@ function shiftOf(refShiftX, refShiftY, curShiftX, curShiftY, size = 192) {
 const tests = [];
 const test = (name, fn) => tests.push([name, fn]);
 
-test('整数ずれを符号込みで復元できる', () => {
-  // cur は ref より (+3, -2) だけ内容がずれている → サンプル位置の補正は (-3, +2)
+test('整数のずれを符号も含めて求められる', () => {
+  // cur は ref より (+3, -2) だけずれている。取り出す位置の補正は (-3, +2) になる
   const { dx, dy } = shiftOf(0, 0, 3, -2);
   assert.ok(Math.abs(dx + 3) < 0.35, `dx=${dx}`);
   assert.ok(Math.abs(dy - 2) < 0.35, `dy=${dy}`);
 });
 
-test('小数画素のずれを 0.3px 以内で復元できる', () => {
+test('画素より細かいずれを 0.3 画素以内で求められる', () => {
   const { dx, dy } = shiftOf(0, 0, 1.5, 0.5);
   assert.ok(Math.abs(dx + 1.5) < 0.3, `dx=${dx}`);
   assert.ok(Math.abs(dy + 0.5) < 0.3, `dy=${dy}`);
 });
 
-test('ずれなしなら 0 付近を返す', () => {
+test('ずれが無ければ 0 に近い値を返す', () => {
   const { dx, dy } = shiftOf(0, 0, 0, 0);
   assert.ok(Math.hypot(dx, dy) < 0.2, `dx=${dx} dy=${dy}`);
 });
 
-test('大きなずれも粗探索で追える', () => {
+test('大きなずれも粗い探索で追える', () => {
   const { dx, dy } = shiftOf(0, 0, 12, 9);
   assert.ok(Math.abs(dx + 12) < 0.6, `dx=${dx}`);
   assert.ok(Math.abs(dy + 9) < 0.6, `dy=${dy}`);
 });
 
-test('放物線フィットは中央が最小なら 0 を返す', () => {
+test('放物線の当てはめは、中央が最小なら 0 を返す', () => {
   assert.equal(parabolicOffset(10, 5, 10), 0);
   assert.ok(parabolicOffset(5, 4, 10) < 0);
   assert.ok(parabolicOffset(10, 4, 5) > 0);
 });
 
-test('外れ値のシフトは棄却される', () => {
+test('大きく外れたずれは採用しない', () => {
   assert.equal(isUsableShift({ dx: 200, dy: 0, score: 1 }), false);
   assert.equal(isUsableShift({ dx: 1, dy: 1, score: 999 }), false);
   assert.equal(isUsableShift({ dx: 1, dy: 1, score: 3 }), true);

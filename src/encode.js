@@ -1,6 +1,8 @@
-// 書き出しと保存。
-// iOS では canvas から写真アプリへ直接保存できないため、共有シート経由が実質唯一の経路。
+// 画像の書き出しと保存。
+// iOS では canvas から写真アプリへ直接保存できないため、共有メニューを経由する。
 
+// 拡張子の対応表。実際に選べるのは probeEncoders() を通った形式だけで、
+// 測定した端末では JPEG と PNG だけが残った。
 export const EXTENSION_OF_TYPE = {
   'image/jpeg': 'jpg',
   'image/png': 'png',
@@ -16,9 +18,9 @@ export function timestampName(extension = 'jpg') {
     + `_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}.${extension}`;
 }
 
-// ファイル先頭のマジックバイトから実際の形式を判定する。
-// toBlob は未対応形式を求められても例外を投げず、黙って PNG を返す仕様なので、
-// blob.type だけでは「本当にその形式で符号化されたか」が分からない。
+// ファイル先頭の数バイトから、実際の形式を判定する。
+// toBlob は対応していない形式を指定されても例外を出さず、PNG を返す仕様である。
+// blob.type は指定した値をそのまま返すことがあるため、それだけでは判断できない。
 export async function sniffFormat(blob) {
   const head = new Uint8Array(await blob.slice(0, 16).arrayBuffer());
   const ascii = (from, to) => String.fromCharCode(...head.slice(from, to));
@@ -43,8 +45,8 @@ const FORMAT_OF_TYPE = {
 };
 
 /**
- * どの形式で本当に書き出せるかを調べる。
- * 「type が一致」「マジックバイトが一致」「再デコードできる」の 3 つを満たしたものだけ採用する。
+ * どの形式で実際に書き出せるかを調べる。
+ * 「type が一致する」「中身が一致する」「読み込み直せる」の 3 つを満たしたものだけ採用する。
  */
 export async function probeEncoders(types = ['image/jpeg', 'image/png', 'image/heic', 'image/avif', 'image/webp']) {
   const canvas = document.createElement('canvas');
@@ -86,7 +88,7 @@ export async function probeEncoders(types = ['image/jpeg', 'image/png', 'image/h
   return results;
 }
 
-/** canvas を Blob にする。Safari が未対応の形式を求めると PNG になる点に注意。 */
+/** canvas を Blob にする。対応していない形式を指定すると PNG が返る点に注意する。 */
 export function canvasToBlob(canvas, { type = 'image/jpeg', quality = 0.95 } = {}) {
   return new Promise((resolve, reject) => {
     canvas.toBlob((blob) => {
@@ -96,14 +98,14 @@ export function canvasToBlob(canvas, { type = 'image/jpeg', quality = 0.95 } = {
   });
 }
 
-/** 共有シートに出せるか（ユーザー操作の中から呼ぶこと）。 */
+/** 共有メニューに渡せるかどうか。利用者の操作の中から呼ぶ必要がある。 */
 export function canShareFiles(file) {
   return !!(navigator.canShare && navigator.share && navigator.canShare({ files: [file] }));
 }
 
 /**
- * 保存する。共有シートが使えるならそれを開き（→「画像を保存」で写真アプリへ）、
- * 駄目ならダウンロードにフォールバックする。
+ * 保存する。共有メニューを使える場合はそれを開き、使えない場合はダウンロードする。
+ * 共有メニューの「画像を保存」を選ぶと写真アプリに入る。
  * @returns {Promise<'shared'|'downloaded'|'cancelled'>}
  */
 export async function saveImage(blob, filename = timestampName()) {
@@ -111,12 +113,12 @@ export async function saveImage(blob, filename = timestampName()) {
 
   if (canShareFiles(file)) {
     try {
-      // iOS では title/text を付けると画像ではなくテキスト共有になることがあるので files だけ渡す
+      // iOS では title や text を付けると、画像ではなく文字列の共有になることがある
       await navigator.share({ files: [file] });
       return 'shared';
     } catch (err) {
       if (err?.name === 'AbortError') return 'cancelled';
-      // 共有に失敗したらダウンロードへ
+      // 共有できなかった場合はダウンロードに切り替える
     }
   }
 

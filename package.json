@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "シャッター音の鳴らない Web カメラ（iOS の Web Clip で疑似アプリとして使う）",
+  "description": "シャッター音を鳴らさずに撮影する、ブラウザで動くカメラ",
   "scripts": {
     "test": "node tests/align.test.mjs && node tests/accumulate.test.mjs",
     "icons": "python3 tools/gen-icons.py",

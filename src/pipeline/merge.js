@@ -273,7 +273,7 @@ export class GpuStacker {
     this.fbo[index] = fbo;
   }
 
-  /** 合成を開始する。scale=2 でドリズル（2倍格子）。 */
+  /** 合成を始める。scale に 2 を渡すと、2 倍の格子に重ねる（ドリズル）。 */
   begin(srcWidth, srcHeight, { scale = 1, bicubic = true, noise = 0.14 } = {}) {
     const gl = this.gl;
     this.srcWidth = srcWidth;

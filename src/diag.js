@@ -1,4 +1,5 @@
-// 実機計測ハーネス。推測で設計しないために、端末の実力をここで確定させる。
+// この端末で何ができるかを実際に測るページ。
+// 解像度や撮影方法の速さは端末によって違うため、仕様や記事ではなくここでの実測を基準にする。
 
 import {
   RESOLUTION_LADDER, openStream, stopStream, inspectTrack, attachToVideo,
@@ -11,12 +12,14 @@ import { isPhotoModeAvailable, takePhotoBlob, getPhotoCapabilities, isTrackAlive
 import { isGpuStackSupported, GpuStacker } from './pipeline/merge.js';
 import { probeEncoders, canvasToBlob } from './encode.js';
 import { inspectCameraPermission } from './permission.js';
+import { APP_VERSION } from './version.js';
 
 const $ = (id) => document.getElementById(id);
 const video = $('video');
 
 const report = {
   generatedAt: new Date().toISOString(),
+  appVersion: APP_VERSION,
   userAgent: navigator.userAgent,
 };
 
@@ -38,7 +41,7 @@ function table(rows, columns) {
   return `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
 }
 
-// ---- 0. 環境 ----
+// ---- 1. この端末の環境 ----
 (function environment() {
   const paths = detectSilentPaths();
   report.environment = {
@@ -61,15 +64,15 @@ function table(rows, columns) {
   show('envOut', report.environment);
 }());
 
-// ---- 0b. 許可の持続 ----
-// getUserMedia を呼ぶ前に判定する。ここで「残っていた」と出れば、
-// アプリ側は開始ボタンを待たずにカメラを開いてよい。
+// ---- 2. カメラの許可が残っているか ----
+// getUserMedia を呼ぶ前に判定する。ここで「残っていた」と出る端末では、
+// アプリ側は起動と同時に映像を出せる。
 async function checkPermission(label = 'ページを開いた直後') {
   const result = await inspectCameraPermission();
   const entry = {
     when: label,
     granted: result.granted,
-    permissionsApi: result.permissionState ?? '（Safari は camera を知らない）',
+    permissionsApi: result.permissionState ?? '（この環境では判定できない）',
     deviceLabelsVisible: result.labels,
     videoInputs: result.videoInputs,
     judgedBy: result.reason,
@@ -77,19 +80,19 @@ async function checkPermission(label = 'ページを開いた直後') {
   report.permission = report.permission ?? [];
   report.permission.push(entry);
   show('permOut', {
-    判定: result.granted ? '前回の許可が残っていた' : '許可は残っていなかった',
+    判定: result.granted ? '前回の許可が残っていた' : '許可は残っていなかった（起動のたびに求められる）',
     ...entry,
   });
   return result;
 }
 checkPermission();
-$('permBtn').addEventListener('click', () => checkPermission('ボタンで再判定'));
+$('permBtn').addEventListener('click', () => checkPermission('ボタンで再確認'));
 
-// ---- 1. カメラを開く ----
+// ---- 3. カメラを開く ----
 async function open(facingMode) {
   stopStream(stream);
   resetImageCaptureCache();
-  show('openOut', '起動中…');
+  show('openOut', 'カメラを開いています');
   try {
     stream = await openStream({ facingMode });
     track = stream.getVideoTracks()[0];
@@ -98,13 +101,13 @@ async function open(facingMode) {
     report.opened = { facingMode, ...info };
     show('openOut', info);
   } catch (err) {
-    show('openOut', `失敗: ${err?.name ?? ''} ${err?.message ?? err}`);
+    show('openOut', `開けませんでした: ${err?.name ?? ''} ${err?.message ?? err}`);
   }
 }
 $('openBack').addEventListener('click', () => open('environment'));
 $('openFront').addEventListener('click', () => open('user'));
 
-// ---- 2. 解像度ラダー ----
+// ---- 4. 解像度の候補を順に試す ----
 $('ladderBtn').addEventListener('click', async () => {
   $('ladderBtn').disabled = true;
   const rows = [];
@@ -118,14 +121,14 @@ $('ladderBtn').addEventListener('click', async () => {
         const s = t.getSettings();
         rows.push({
           requested: `${res.width}×${res.height}`,
-          binned: powerEfficient ? '既定' : '抑止',
+          binned: powerEfficient ? '既定のまま' : '抑止',
           actual: `${s.width}×${s.height}`,
           fps: Math.round(s.frameRate ?? 0),
         });
       } catch (err) {
         rows.push({
           requested: `${res.width}×${res.height}`,
-          binned: powerEfficient ? '既定' : '抑止',
+          binned: powerEfficient ? '既定のまま' : '抑止',
           actual: `× ${err?.name ?? ''}`,
           fps: '',
         });
@@ -133,10 +136,10 @@ $('ladderBtn').addEventListener('click', async () => {
         stopStream(local);
       }
       $('ladderOut').innerHTML = table(rows, [
-        { key: 'requested', label: '要求' },
-        { key: 'binned', label: 'binned' },
-        { key: 'actual', label: '実際' },
-        { key: 'fps', label: 'fps' },
+        { key: 'requested', label: '指定した値' },
+        { key: 'binned', label: '省電力' },
+        { key: 'actual', label: '返った値' },
+        { key: 'fps', label: '毎秒コマ数' },
       ]);
     }
   }
@@ -147,18 +150,18 @@ $('ladderBtn').addEventListener('click', async () => {
   await open(facingMode);
 });
 
-// ---- 3. 能力 ----
+// ---- 5. カメラの機能 ----
 $('capsBtn').addEventListener('click', async () => {
-  if (!track) return show('capsOut', '先にカメラを開いてください');
+  if (!track) return show('capsOut', '先に「3. カメラを開く」を実行してください');
   const info = inspectTrack(track);
   const photoCaps = await getPhotoCapabilities(track);
   report.capabilities = { settings: info.settings, capabilities: info.capabilities, photoCapabilities: photoCaps };
   show('capsOut', report.capabilities);
 });
 
-// ---- 4. 取得経路ベンチ ----
+// ---- 6. 1 コマを取り出す速さ ----
 $('benchBtn').addEventListener('click', async () => {
-  if (!track) return show('benchOut', '先にカメラを開いてください');
+  if (!track) return show('benchOut', '先に「3. カメラを開く」を実行してください');
   $('benchBtn').disabled = true;
   const rows = [];
   for (const path of ['grabFrame', 'videoFrame', 'drawImage']) {
@@ -170,7 +173,7 @@ $('benchBtn').addEventListener('click', async () => {
       const t0 = performance.now();
       try {
         const frame = await grabSilentFrame(video, track, { prefer: path });
-        if (frame.path !== path) { error = `${path} 非対応（${frame.path} が使われました）`; frame.bitmap.close?.(); break; }
+        if (frame.path !== path) { error = `${path} は使えません（${frame.path} が使われました）`; frame.bitmap.close?.(); break; }
         times.push(performance.now() - t0);
         size = `${frame.width}×${frame.height}`;
         oriented = matchesOrientation(frame.width, frame.height, video);
@@ -185,13 +188,13 @@ $('benchBtn').addEventListener('click', async () => {
       path,
       size: size || '—',
       median: times.length ? `${times[Math.floor(times.length / 2)].toFixed(1)}ms` : '—',
-      oriented: oriented === null ? '—' : (oriented ? '一致' : '回転'),
+      oriented: oriented === null ? '—' : (oriented ? '映像と同じ' : '回転している'),
       note: error,
     });
     $('benchOut').innerHTML = table(rows, [
-      { key: 'path', label: '経路' },
+      { key: 'path', label: '取り出し方' },
       { key: 'size', label: '解像度' },
-      { key: 'median', label: '中央値' },
+      { key: 'median', label: '所要（中央値）' },
       { key: 'oriented', label: '向き' },
       { key: 'note', label: '備考' },
     ]);
@@ -201,9 +204,9 @@ $('benchBtn').addEventListener('click', async () => {
   $('benchBtn').disabled = false;
 });
 
-// ---- 5. 連写レート ----
+// ---- 7. 連写の速さ ----
 $('fpsBtn').addEventListener('click', async () => {
-  if (!track) return show('fpsOut', '先にカメラを開いてください');
+  if (!track) return show('fpsOut', '先に「3. カメラを開く」を実行してください');
   $('fpsBtn').disabled = true;
   let frames = 0;
   let bitmaps = 0;
@@ -229,13 +232,13 @@ $('fpsBtn').addEventListener('click', async () => {
   $('fpsBtn').disabled = false;
 });
 
-// ---- 6. 写真 API ----
+// ---- 8. 写真API で撮る ----
 async function runTakePhoto(maxSize) {
   const key = maxSize ? 'takePhotoMaxSize' : 'takePhoto';
-  if (!track) return show('photoOut', '先にカメラを開いてください');
+  if (!track) return show('photoOut', '先に「3. カメラを開く」を実行してください');
   if (!isPhotoModeAvailable()) {
     report[key] = { supported: false };
-    return show('photoOut', 'この Safari は takePhoto に対応していません');
+    return show('photoOut', 'この端末の Safari は写真API に対応していません');
   }
   $('photoBtn').disabled = true;
   $('photoMaxBtn').disabled = true;
@@ -272,7 +275,7 @@ async function runTakePhoto(maxSize) {
       maxSizeRequested: maxSize,
       error: String(err?.message ?? err),
       trackAliveAfter: isTrackAlive(track),
-      hint: isTrackAlive(track) ? '' : 'トラックが死にました。カメラを開き直してください。',
+      hint: isTrackAlive(track) ? '' : 'カメラとの接続が切れました。開き直してください。',
     };
   }
   $('photoOut').innerHTML = `<pre>${JSON.stringify(report[key], null, 2)}</pre>`;
@@ -294,7 +297,7 @@ const recordSound = (value) => {
 $('soundYes').addEventListener('click', () => recordSound('played'));
 $('soundNo').addEventListener('click', () => recordSound('silent'));
 
-// ---- 7. GPU ----
+// ---- 9. GPU と合成 ----
 $('gpuBtn').addEventListener('click', async () => {
   const canvas = document.createElement('canvas');
   const gl = canvas.getContext('webgl2');
@@ -335,7 +338,7 @@ $('gpuBtn').addEventListener('click', async () => {
   show('gpuOut', info);
 });
 
-// ---- 8. 書き出し ----
+// ---- 10. 保存できる形式 ----
 $('encodeBtn').addEventListener('click', async () => {
   $('encodeBtn').disabled = true;
   const canvas = document.createElement('canvas');
@@ -353,7 +356,7 @@ $('encodeBtn').addEventListener('click', async () => {
   $('encodeBtn').disabled = false;
 });
 
-// ---- 9. 結果 ----
+// ---- 13. 結果 ----
 $('copyBtn').addEventListener('click', async () => {
   const text = JSON.stringify(report, null, 2);
   try {
@@ -361,7 +364,14 @@ $('copyBtn').addEventListener('click', async () => {
     $('copyBtn').textContent = 'コピーしました';
     setTimeout(() => { $('copyBtn').textContent = '結果をコピー'; }, 1500);
   } catch {
-    window.prompt('コピーしてください', text);
+    // クリップボードを使えない場合は、選んでコピーできる入力欄に置き換える
+    const area = document.createElement('textarea');
+    area.value = text;
+    area.readOnly = true;
+    $('resultOut').replaceWith(area);
+    area.id = 'resultOut';
+    area.select();
+    $('copyBtn').textContent = '下の欄から選んでコピーしてください';
   }
 });
 $('shareBtn').addEventListener('click', async () => {
@@ -375,9 +385,9 @@ $('backBtn').addEventListener('click', () => { window.location.href = './index.h
 refreshResult();
 window.addEventListener('pagehide', () => stopStream(stream));
 
-// ---- 7b. GPU シェーダと CPU 実装の一致テスト ----
-// シェーダはヘッドレスで検証できないため、同じ入力・同じずれを両経路に通し、
-// 出力がどれだけ一致するかを端末上で確かめる。
+// ---- 9b. GPU と CPU の照合 ----
+// GPU で動く処理は開発機では確かめられないため、同じ入力を GPU と CPU の
+// 両方に通し、結果がどれだけ一致するかを端末上で確認する。
 
 function syntheticFrame(width, height, offsetX, offsetY) {
   const canvas = document.createElement('canvas');
@@ -485,11 +495,11 @@ $('selfTestBtn').addEventListener('click', async () => {
 });
 
 
-// ---- 10. 写真API と フレーム切り出しの比較 ----
+// ---- 11. 写真API と通常撮影の比較 ----
 //
-// 「写真 API が無音なら、他の方式は要らないのでは」を数字で判断するための計測。
-// 解像度・バイト数・所要時間に加えて、シャープネス（ラプラシアン分散）と
-// ノイズ（平坦部の標準偏差）を同じ条件で比べる。
+// どちらの撮影方法を既定にするかを数字で決めるための計測。
+// 解像度、ファイルの大きさ、所要時間に加えて、輪郭の量（ラプラシアン分散）と
+// 平らな部分のノイズ（標準偏差）を同じ条件で比べる。
 
 /** 中央を切り出して解析用の ImageData を返す。両者を同じ画素数で比べるため。 */
 async function centerCrop(source, size = 512) {
@@ -620,7 +630,7 @@ async function compareAtResolution(res) {
 function renderComparison(entries) {
   const rows = [];
   for (const e of entries) {
-    for (const [label, m] of [['写真API', e.photo], ['フレーム', e.frame]]) {
+    for (const [label, m] of [['写真API', e.photo], ['通常撮影', e.frame]]) {
       rows.push({
         session: e.videoSize,
         method: label,
@@ -633,18 +643,18 @@ function renderComparison(entries) {
     }
   }
   $('compareOut').innerHTML = table(rows, [
-    { key: 'session', label: 'セッション' },
-    { key: 'method', label: '方式' },
+    { key: 'session', label: '映像の解像度' },
+    { key: 'method', label: '撮影方法' },
     { key: 'size', label: '解像度' },
-    { key: 'bytes', label: 'サイズ' },
+    { key: 'bytes', label: '大きさ' },
     { key: 'ms', label: '所要' },
-    { key: 'sharp', label: 'シャープ↑' },
-    { key: 'noise', label: 'ノイズ↓' },
+    { key: 'sharp', label: '輪郭（多いほど上）' },
+    { key: 'noise', label: 'ノイズ（少ないほど上）' },
   ]);
 
   // 解像度ごとに音の有無を記録できるようにする
   const holder = $('compareSound');
-  holder.innerHTML = '<p class="hint">写真 API の撮影時、シャッター音は鳴りましたか？</p>';
+  holder.innerHTML = '<p class="hint">写真API での撮影中、シャッター音は鳴りましたか。</p>';
   entries.forEach((e, index) => {
     const line = document.createElement('div');
     line.innerHTML = `<span class="hint">${e.videoSize}: </span>`;
@@ -694,19 +704,19 @@ $('compareBtn').addEventListener('click', () => runComparison([
 ]));
 $('compareCurrentBtn').addEventListener('click', () => runComparison([null]));
 
-// ---- 11. 写真 API の要求サイズ上限 ----
+// ---- 12. 写真API に指定できる大きさ ----
 $('limitBtn').addEventListener('click', async () => {
-  if (!track) return show('limitOut', '先にカメラを開いてください');
+  if (!track) return show('limitOut', '先に「3. カメラを開く」を実行してください');
   $('limitBtn').disabled = true;
   const base = track.getSettings();
   const caps = await getPhotoCapabilities(track);
   const candidates = [
-    { label: '×1（映像と同じ）', width: base.width, height: base.height },
-    { label: '×1.5', width: Math.round(base.width * 1.5), height: Math.round(base.height * 1.5) },
-    { label: '×2', width: base.width * 2, height: base.height * 2 },
+    { label: '1 倍（映像と同じ）', width: base.width, height: base.height },
+    { label: '1.5 倍', width: Math.round(base.width * 1.5), height: Math.round(base.height * 1.5) },
+    { label: '2 倍', width: base.width * 2, height: base.height * 2 },
   ];
   if (caps?.imageWidth?.max) {
-    candidates.push({ label: '能力値の最大', width: caps.imageWidth.max, height: caps.imageHeight.max });
+    candidates.push({ label: '端末の上限', width: caps.imageWidth.max, height: caps.imageHeight.max });
   }
 
   const rows = [];
@@ -731,10 +741,10 @@ $('limitBtn').addEventListener('click', async () => {
     }
     rows.push(row);
     $('limitOut').innerHTML = table(rows, [
-      { key: 'requested', label: '要求' },
+      { key: 'requested', label: '指定した大きさ' },
       { key: 'result', label: '結果' },
-      { key: 'bytes', label: 'サイズ' },
-      { key: 'alive', label: 'トラック' },
+      { key: 'bytes', label: 'ファイルの大きさ' },
+      { key: 'alive', label: 'カメラ' },
     ]);
     if (!isTrackAlive(track)) {
       // eslint-disable-next-line no-await-in-loop

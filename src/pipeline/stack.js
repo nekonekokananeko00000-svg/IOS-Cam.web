@@ -68,8 +68,9 @@ export async function captureStack(videoEl, track, {
   if (!srcWidth || !srcHeight) throw new Error('映像のサイズが取れません');
 
   const { stacker, kind } = createStacker();
-  // 4K 素材に 2 倍格子を掛けると 33MP になり、累積バッファだけで 1GB を超える。
-  // 端末が確保できる範囲に収まるよう倍率を落とす。
+  // 4K の映像を 2 倍の格子に重ねると 3300 万画素になり、計算用の領域だけで 1GB を超える。
+  // 端末が確保できる大きさに収まるまで倍率を下げる。いまのところ倍率は 1 か 2 しか渡らないので、
+  // この繰り返しは 2 から 1 へ落とすためにだけ動く。
   let effectiveScale = kind === 'cpu' ? 1 : scale;
   let scaleReduced = false;
   while (effectiveScale > 1 && srcWidth * srcHeight * effectiveScale * effectiveScale > MAX_OUTPUT_PIXELS) {

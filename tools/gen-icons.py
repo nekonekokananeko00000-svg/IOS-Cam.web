@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""アイコン PNG を生成する。外部ライブラリは使わない（zlib だけで PNG を書く）。
+"""アイコンの PNG を生成する。外部のライブラリは使わず、zlib だけで PNG を書き出す。
 
     python3 tools/gen-icons.py
 """

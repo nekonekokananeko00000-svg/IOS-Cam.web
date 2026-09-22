@@ -1,5 +1,6 @@
-// 合成の中核（accumulate.js）の単体テスト。
-// 「ノイズが 1/√N で減る」「ずれたフレームが正しく重なる」「動体が弾かれる」を確認する。
+// 合成の計算（accumulate.js）の単体テスト。
+// ノイズが 1/√N に減ること、ずれたコマが正しく重なること、
+// 動いたものが混ざらないことを確かめる。
 import assert from 'node:assert/strict';
 import {
   createAccumulator, accumulateFrame, normalize, toLinear, toSrgb, bilinearSample,
@@ -31,7 +32,7 @@ function rng(seed = 42) {
   };
 }
 
-/** 正規分布っぽい乱数（中心極限） */
+/** 正規分布に近い乱数。一様乱数を足し合わせて作る。 */
 function gauss(rand) {
   return (rand() + rand() + rand() + rand() + rand() + rand() - 3) * 1.4;
 }
@@ -50,13 +51,13 @@ function stdevAgainst(bytes, truth) {
 const tests = [];
 const test = (name, fn) => tests.push([name, fn]);
 
-test('ガンマ変換は往復して元に戻る', () => {
+test('明るさの変換は往復しても元に戻る', () => {
   for (const v of [0, 17, 128, 200, 255]) {
     assert.ok(Math.abs(toSrgb(toLinear(v)) - v) < 0.6, `v=${v}`);
   }
 });
 
-test('双線形補間は格子点で元の値を返す', () => {
+test('双線形補間は、格子の上では元の値を返す', () => {
   const px = makeFrame((x) => x * 4);
   const out = [0, 0, 0];
   bilinearSample(px, W, H, 5, 5, out);
@@ -65,7 +66,7 @@ test('双線形補間は格子点で元の値を返す', () => {
   assert.ok(Math.abs(out[0] - 22) < 0.001, `got ${out[0]}`);
 });
 
-test('多数枚の平均でノイズが 1/√N 程度に減る', () => {
+test('枚数を重ねるとノイズが 1/√N ほどに減る', () => {
   const truthFn = (x, y) => 100 + ((x + y) % 16) * 6;
   const truth = makeFrame(truthFn);
   const rand = rng(7);
@@ -90,7 +91,7 @@ test('多数枚の平均でノイズが 1/√N 程度に減る', () => {
   assert.ok(sixteen < one * 0.5, `1枚=${one.toFixed(2)} 16枚=${sixteen.toFixed(2)}`);
 });
 
-test('ずれたフレームを指定シフトで正しく重ねられる', () => {
+test('ずれたコマを、指定したずれの分だけ動かして重ねられる', () => {
   const truthFn = (x, y) => 40 + ((x * 3 + y * 2) % 200);
   const truth = makeFrame(truthFn);
   const acc = createAccumulator(W, H);
@@ -115,7 +116,7 @@ test('ずれたフレームを指定シフトで正しく重ねられる', () =>
   assert.ok(worst < 2, `最大差 ${worst}`);
 });
 
-test('基準から外れた画素（動体）は重みが落ちる', () => {
+test('基準から大きく外れた画素は重みが下がる', () => {
   const truthFn = () => 120;
   const ref = makeFrame(truthFn);
   const acc = createAccumulator(W, H);
@@ -135,7 +136,7 @@ test('基準から外れた画素（動体）は重みが落ちる', () => {
   assert.ok(right < 150, `右 ${right}（ゴーストが残っている）`);
 });
 
-test('アンシャープでエッジのコントラストが上がる', () => {
+test('輪郭の強調で境目の差が大きくなる', () => {
   const edge = makeFrame((x) => (x < W / 2 ? 80 : 160));
   const acc = createAccumulator(W, H);
   accumulateFrame({

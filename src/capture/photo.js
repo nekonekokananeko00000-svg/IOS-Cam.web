@@ -1,9 +1,13 @@
-// 高画質モード（ImageCapture.takePhoto）。
+// 写真API（ImageCapture.takePhoto）による撮影。
 //
-// 重要: この経路は WebKit 内部で AVCapturePhotoOutput.capturePhotoWithSettings を呼ぶ。
-// 日本・韓国版の端末はシステム側でシャッター音抑止が許可されていない
-// （AVCapturePhotoOutput.isShutterSoundSuppressionSupported が false）ため、
-// 撮影時に音が鳴る可能性が高い。既定では使わず、ユーザーが明示的に選んだときだけ使う。
+// WebKit はこの API を AVCapturePhotoOutput で実装している。日本・韓国向けの端末では
+// システム側でシャッター音の抑止が許可されていないため、本来は音が鳴る経路である。
+// ただし iPhone 1 台（iOS 18.7 / Safari 26.6.1）で試した範囲では、どの解像度でも鳴らなかった。
+// WebKit 側に音を止める処理は無く、この経路が音の対象から外れているだけなので、
+// 端末や iOS の版によっては鳴る可能性がある。
+//
+// 画素数は映像と同じで、解像度は上がらない。1 枚あたり 0.3 秒から 1.4 秒かかる。
+// 以上から、既定の撮影方法にはせず、利用者が選んだときだけ使う。
 
 /** トラックが生きているか（IPC 切断後は ended になる）。 */
 export function isTrackAlive(track) {
@@ -39,7 +43,7 @@ export async function getPhotoCapabilities(track) {
  * @returns {Promise<{blob: Blob, width:number, height:number, requested:object}>}
  */
 export async function takePhotoBlob(track, { size = null } = {}) {
-  if (!isPhotoModeAvailable()) throw new Error('この端末は高画質モードに対応していません');
+  if (!isPhotoModeAvailable()) throw new Error('この端末の Safari は写真API に対応していません');
   const ic = new ImageCapture(track);
 
   const settings = {};
