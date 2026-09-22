@@ -1,6 +1,6 @@
-// 合成の中核（CPU 版）。DOM に触れない純関数なので単体テストできる。
-// GPU 版（merge.js のシェーダ）と同じ式を実装しており、
-// diag.html の自己テストで両者の一致を確認できる。
+// 合成の計算（CPU 版）。DOM に触れない純粋な関数なので、単体テストできる。
+// GPU 版（merge.js のシェーダ）と同じ式で書いてあり、
+// 端末チェックの照合で両者が一致するかを確認できる。
 
 const GAMMA = 2.2;
 
@@ -39,7 +39,7 @@ export function bilinearSample(px, width, height, x, y, out) {
 /**
  * 1 フレームを累積バッファへ足す。
  * dx, dy は「参照に重ねるためにソースをサンプルする位置のずれ」（画素単位）。
- * 基準フレームから離れた画素は重みを落とす（動体のゴースト対策）。
+ * 基準のコマから離れた画素は重みを下げる（動いたものが二重に写るのを防ぐ）。
  */
 export function accumulateFrame({
   px, ref, width, height, sum, weights,
@@ -70,7 +70,7 @@ export function accumulateFrame({
   }
 }
 
-/** 累積を正規化し、任意でアンシャープを掛けて RGBA バイト列にする。 */
+/** 累積を正規化し、必要なら輪郭を強調して RGBA のバイト列にする。 */
 export function normalize({ sum, weights, width, height, sharpen = 0 }) {
   const norm = new Float32Array(width * height * 3);
   for (let o = 0; o < width * height; o += 1) {

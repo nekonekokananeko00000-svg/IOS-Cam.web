@@ -1,8 +1,8 @@
-// サブピクセル位置合わせ。
+// 画素より細かい単位での位置合わせ。
 //
-// 手持ち撮影の微小な揺れは「ほぼ平行移動」なので、回転は無視して並進のみを推定する。
-// 縮小した輝度画像でピラミッド探索し、最後に放物線フィットで小数画素まで求める。
-// 全て純関数なので Node 上で単体テストできる。
+// 手持ち撮影の小さな揺れはほぼ平行移動なので、回転は無視して縦横のずれだけを求める。
+// 縮小した明るさの画像を段階的に探索し、最後に放物線を当てはめて画素より細かい値を出す。
+// すべて純粋な関数なので、Node 上で単体テストできる。
 
 /** RGBA の ImageData から輝度の Float32Array を作る。 */
 export function toLuma(imageData) {
@@ -29,7 +29,7 @@ export function downsample2(plane) {
   return { data: out, width: w, height: h };
 }
 
-/** 縮小ピラミッドを作る（levels 段。0 が原寸）。 */
+/** 段階的に縮小した画像を作る（levels 段。0 が原寸）。 */
 export function buildPyramid(plane, levels = 3) {
   const pyramid = [plane];
   for (let i = 1; i < levels; i += 1) {
@@ -63,7 +63,7 @@ export function sad(ref, cur, dx, dy, margin) {
   return sum / count;
 }
 
-/** 3点の放物線フィットで極小位置のオフセット（-0.5〜0.5 程度）を返す。 */
+/** 3 点に放物線を当てはめ、最小になる位置のずれ（およそ -0.5 から 0.5）を返す。 */
 export function parabolicOffset(left, center, right) {
   const denom = left - 2 * center + right;
   if (Math.abs(denom) < 1e-9) return 0;
@@ -95,8 +95,8 @@ export function estimateShiftAtLevel(ref, cur, { search = 4, guessX = 0, guessY 
 }
 
 /**
- * ピラミッドを粗→密にたどって並進を推定する。
- * 返す dx, dy は「cur を ref に重ねるために cur をサンプルする位置のずれ」（原寸の画素単位）。
+ * 粗い段から細かい段へたどって、縦横のずれを求める。
+ * 返す dx と dy は、cur を ref に重ねるために cur を取り出す位置のずれである（原寸の画素単位）。
  */
 export function estimateShift(refPyramid, curPyramid, { coarseSearch = 6, fineSearch = 1 } = {}) {
   const levels = Math.min(refPyramid.length, curPyramid.length);
@@ -127,7 +127,8 @@ export function estimateShift(refPyramid, curPyramid, { coarseSearch = 6, fineSe
 }
 
 /**
- * 位置合わせの品質判定。ずれが大きすぎる／一致度が悪いフレームは捨てる。
+ * 位置合わせの結果を採用してよいかを判定する。
+ * ずれが大きすぎるコマや、一致の度合いが悪いコマは捨てる。
  */
 export function isUsableShift({ dx, dy, score }, { maxShift = 48, maxScore = 24 } = {}) {
   if (!Number.isFinite(dx) || !Number.isFinite(dy)) return false;

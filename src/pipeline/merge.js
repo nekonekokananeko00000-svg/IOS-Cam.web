@@ -1,13 +1,14 @@
-// 多フレーム合成。
+// 複数のコマを重ねる合成。
 //
-// 設計:
-//   - 全フレームを保持せず、来たフレームから順に float の累積バッファへ足す（メモリ O(1)）
-//   - 累積は必ずリニア光で行う（sRGB のまま平均すると暗部が濁る）
-//   - 基準フレームから大きく外れた画素は重みを落とす（動体のゴースト対策）
-//   - 出力を 2 倍格子にすると、手ぶれのサブピクセルずれが解像度として効く（ドリズル）
+// 考え方:
+//   - すべてのコマを保持せず、届いた順に浮動小数の累積バッファへ足す（必要な記憶領域は一定）
+//   - 累積は必ず直線化した明るさで行う（sRGB のまま平均すると暗部が濁る）
+//   - 基準のコマから大きく外れた画素は重みを下げる（動いたものが二重に写るのを防ぐ）
+//   - 出力を 2 倍の格子にすると、手ぶれによる画素以下のずれが解像度の向上につながる（ドリズル）
 //
 // WebGPU ではなく WebGL2 を使っている。合成自体はフラグメントシェーダ 2 本で足り、
-// iOS 15 以降どこでも動くため。GPU 抽象は gpuContext() に閉じてあるので後から差し替えられる。
+// iOS 15 以降ならどこでも動くため。GPU を触る処理はこのファイルに閉じてあるので、
+// 後から差し替えられる。
 
 const VERT = `#version 300 es
 in vec2 aPos;
@@ -26,9 +27,9 @@ uniform sampler2D uRef;
 uniform sampler2D uAccum;
 uniform ivec2 uSrcSize;
 uniform ivec2 uOutSize;
-uniform vec2 uShift;        // ソースを参照へ重ねるための画素単位のずれ
-uniform float uWeight;      // このフレームの基本重み
-uniform float uNoise;       // ロバスト性のしきい値（大きいほど寛容）
+uniform vec2 uShift;        // 基準のコマへ重ねるための、画素単位のずれ
+uniform float uWeight;      // このコマの基本の重み
+uniform float uNoise;       // 外れ値を許す度合い（大きいほど寛容）
 uniform int uBicubic;
 uniform int uIsReference;
 
@@ -104,7 +105,7 @@ void main() {
   if (uIsReference == 0) {
     vec3 ref = sampleBilinear(uRef, outCoord * scale);
     float d = distance(src, ref);
-    // 基準から離れた画素（動体・位置合わせ失敗）ほど重みを落とす
+    // 基準から離れた画素（動いたもの、位置合わせに失敗した箇所）ほど重みを下げる
     w *= exp(-(d * d) / max(uNoise * uNoise, 1e-5));
   }
 
@@ -117,7 +118,7 @@ precision highp sampler2D;
 
 uniform sampler2D uAccum;
 uniform ivec2 uOutSize;
-uniform float uSharpen;      // アンシャープの強さ（0 で無効）
+uniform float uSharpen;      // 輪郭の強調の強さ（0 で無効）
 uniform float uSaturation;
 
 in vec2 vUv;
@@ -138,7 +139,7 @@ void main() {
   vec3 center = normAt(p);
 
   if (uSharpen > 0.0) {
-    // 3x3 ガウシアンとの差分を足す（ハローを抑えるため強さは控えめに）
+    // 3×3 のガウシアンとの差分を足す（白い縁を抑えるため強さは控えめに）
     vec3 blur = center * 4.0;
     blur += (normAt(p + ivec2(1, 0)) + normAt(p + ivec2(-1, 0))
            + normAt(p + ivec2(0, 1)) + normAt(p + ivec2(0, -1))) * 2.0;
@@ -188,10 +189,10 @@ function link(gl, vertSrc, fragSrc) {
 
 // この画素数を超えたら累積バッファを half float にする
 const HALF_FLOAT_THRESHOLD = 6_000_000;
-// これ以上の出力は端末のメモリに乗らないとみなして拒否する
+// これを超える大きさは端末の記憶領域に収まらないとみなし、受け付けない
 export const MAX_OUTPUT_PIXELS = 12_000_000;
 
-/** WebGL2 と浮動小数レンダーターゲットが使えるか。 */
+/** WebGL2 と、浮動小数の描画先が使えるか。 */
 export function isGpuStackSupported() {
   try {
     const canvas = document.createElement('canvas');
@@ -223,7 +224,7 @@ export class GpuStacker {
     const gl = this.gl;
     this.float32 = !!gl.getExtension('EXT_color_buffer_float');
     if (!this.float32 && !gl.getExtension('EXT_color_buffer_half_float')) {
-      throw new Error('浮動小数のレンダーターゲットが使えません');
+      throw new Error('浮動小数の描画先が使えません');
     }
     this.accumProgram = link(gl, VERT, ACCUM_FRAG);
     this.finishProgram = link(gl, VERT, FINISH_FRAG);
@@ -250,7 +251,7 @@ export class GpuStacker {
     const tex = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, tex);
     // 大きな出力では half float に落とす。RGBA32F は 1 画素 16 バイトで、
-    // 8MP の ping-pong だけで 266MB に達してしまうため。
+    // 800 万画素分を 2 枚（交互に書き込むため）持つだけで 266MB に達してしまう。
     const useHalf = !this.float32 || width * height > HALF_FLOAT_THRESHOLD;
     const internal = useHalf ? gl.RGBA16F : gl.RGBA32F;
     this.accumFormat = useHalf ? 'rgba16f' : 'rgba32f';
@@ -312,7 +313,7 @@ export class GpuStacker {
   }
 
   /**
-   * フレームを 1 枚足す。
+   * コマを 1 枚足す。
    * @param {ImageBitmap|HTMLCanvasElement|HTMLVideoElement} source
    * @param {{dx:number, dy:number, weight:number, isReference:boolean}} options
    */
@@ -355,7 +356,7 @@ export class GpuStacker {
     this.frameCount += 1;
   }
 
-  /** 正規化・アンシャープを掛けて canvas を返す。 */
+  /** 正規化してから輪郭を強調し、canvas を返す。 */
   finish({ sharpen = 0.35, saturation = 1.0 } = {}) {
     const gl = this.gl;
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);

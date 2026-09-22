@@ -4,8 +4,8 @@
 // 前回の許可が残っていれば、操作を待たずにカメラを開いてよい。
 //
 // 判定の材料は 2 つ。どちらも getUserMedia を呼ばないため、許可を求める表示は出ない。
-//   1. Permissions API … Safari は camera を知らず例外を投げることがあるので try/catch
-//   2. enumerateDevices() のラベル … 仕様上、許可されていない間は空文字
+//   1. Permissions API。Safari は name: 'camera' に対応しておらず、例外を投げることがある
+//   2. enumerateDevices() が返すカメラ名。仕様上、許可されていない間は空文字になる
 
 /** Permissions API による判定。使えなければ null。 */
 export async function queryCameraPermission() {
@@ -14,11 +14,11 @@ export async function queryCameraPermission() {
     const status = await navigator.permissions.query({ name: 'camera' });
     return status?.state ?? null; // 'granted' | 'prompt' | 'denied'
   } catch {
-    return null; // Safari は name: 'camera' を知らず TypeError を投げる
+    return null; // Safari では TypeError になることがある
   }
 }
 
-/** デバイスのラベルが見えているか（= 過去に許可されている）。 */
+/** カメラ名（ラベル）が読めるか。読めれば過去に許可されている。 */
 export async function hasDeviceLabels() {
   if (!navigator.mediaDevices?.enumerateDevices) return false;
   try {
@@ -30,7 +30,7 @@ export async function hasDeviceLabels() {
 }
 
 /**
- * 許可が残っていそうかを調べる。
+ * 許可が残っているかどうかを調べる。
  * @returns {Promise<{granted:boolean, permissionState:string|null, labels:boolean,
  *   videoInputs:number, reason:string}>}
  */

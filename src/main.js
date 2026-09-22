@@ -20,6 +20,13 @@ import { APP_VERSION } from './version.js';
 const $ = (id) => document.getElementById(id);
 const sleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
 
+/** 映像から 1 コマを取り出す方法の表示名。 */
+const PATH_LABELS = {
+  drawImage: '描画による取得',
+  videoFrame: 'VideoFrame による取得',
+  grabFrame: 'grabFrame による取得',
+};
+
 const el = {
   video: $('preview'),
   grid: $('grid'),
@@ -192,15 +199,16 @@ function isStreamAlive() {
 }
 
 function handleCameraError(err) {
+  console.error(err);
   const name = err?.name ?? '';
-  let message = `カメラを開けませんでした。${err?.message ?? err}`;
+  let message = 'カメラを開けませんでした。しばらく待ってからやり直してください。';
   if (name === 'NotAllowedError') {
     message = 'カメラの使用が許可されていません。設定アプリの「アプリ」から Safari を開き、'
       + '「カメラ」を「許可」または「確認」にしてください。';
   } else if (name === 'NotFoundError') {
     message = 'カメラが見つかりませんでした。';
   } else if (name === 'NotReadableError') {
-    message = '他のアプリがカメラを使っている可能性があります。';
+    message = '他のアプリがカメラを使っている可能性があります。そのアプリを閉じてからやり直してください。';
   }
   el.start.classList.remove('hidden');
   el.startNote.textContent = message;
@@ -226,7 +234,7 @@ async function changeResolution() {
     if (Math.abs(got - wanted) / wanted > 0.25) throw new Error('要求した解像度に届きませんでした');
     updateStatus();
     el.buildInfo.textContent = describeBuild(info);
-    toast(`${info.width}×${info.height} になりました`);
+    toast(`解像度を ${info.width}×${info.height} に変更しました`);
   } catch {
     await startCamera();
   }
@@ -262,28 +270,31 @@ async function ensurePreviewRunning() {
 
 function describeBuild(info) {
   const paths = detectSilentPaths();
-  const available = Object.entries(paths).filter(([, ok]) => ok).map(([key]) => key).join('、');
-  const chosen = getPreferredPath() ?? '未判定';
-  return `版 ${APP_VERSION}　${info.width}×${info.height}／毎秒 ${Math.round(info.frameRate)} コマ`
-    + `　取得方法 ${chosen}（使えるもの: ${available}）`
-    + `　写真API ${isPhotoModeAvailable() ? 'あり' : 'なし'}`;
+  const available = Object.entries(paths)
+    .filter(([, ok]) => ok)
+    .map(([key]) => PATH_LABELS[key] ?? key)
+    .join('、');
+  const chosen = PATH_LABELS[getPreferredPath()] ?? 'まだ調べていません';
+  return `版 ${APP_VERSION}／${info.width}×${info.height}／毎秒 ${Math.round(info.frameRate)} コマ`
+    + `／取得方法：${chosen}（使えるもの：${available}）`
+    + `／写真API：${isPhotoModeAvailable() ? 'あり' : 'なし'}`;
 }
 
 function updatePermissionInfo() {
   const permission = state.permission;
   if (!permission) {
-    el.permissionInfo.textContent = '起動時の判定: 未取得';
+    el.permissionInfo.textContent = '起動時の判定：まだ調べていません';
     return;
   }
   const source = {
     'permissions-api': 'Permissions API による判定',
     'device-labels': 'カメラ名が読めたことによる判定',
-    denied: '拒否されています',
-    unknown: '判定できませんでした',
+    denied: '設定で拒否されているため',
+    unknown: '判定する手段がないため',
   }[permission.reason] ?? permission.reason;
   el.permissionInfo.textContent = permission.granted
-    ? `起動時の判定: 前回の許可が残っていました（${source}）`
-    : `起動時の判定: 許可は残っていませんでした（${source}）`;
+    ? `起動時の判定：前回の許可が残っていました（${source}）`
+    : `起動時の判定：許可は残っていませんでした（${source}）`;
 }
 
 // ---------- カメラの機能 ----------
@@ -304,7 +315,7 @@ function syncZoomButtons(caps) {
   holder.hidden = false;
   for (const value of steps) {
     const button = document.createElement('button');
-    button.textContent = `${value}倍`;
+    button.textContent = `${value} 倍`;
     button.setAttribute('aria-pressed', String(Math.abs(state.settings.zoom - value) < 0.05));
     button.addEventListener('click', () => applyZoom(value, holder, button));
     holder.appendChild(button);
@@ -324,7 +335,7 @@ async function applyZoom(value, holder, button) {
     button.setAttribute('aria-pressed', 'true');
   }
   $('zoomInput').value = value;
-  $('zoomValue').textContent = `${value.toFixed(1)}倍`;
+  $('zoomValue').textContent = `${value.toFixed(1)} 倍`;
 }
 
 async function restoreZoom() {
@@ -343,7 +354,7 @@ function syncCapabilityControls(caps) {
     input.max = Math.min(caps.zoom.max ?? 5, 8);
     input.step = caps.zoom.step || 0.1;
     input.value = state.track.getSettings().zoom ?? caps.zoom.min;
-    $('zoomValue').textContent = `${Number(input.value).toFixed(1)}倍`;
+    $('zoomValue').textContent = `${Number(input.value).toFixed(1)} 倍`;
   } else {
     zoomRow.hidden = true;
   }
@@ -367,7 +378,7 @@ function setMode(mode) {
   updateStatus();
 
   if (mode === 'photo' && !state.settings.photoNoticeShown) {
-    toast('写真API は実験的な撮影方法です。端末によっては音が鳴る可能性があります。', 5000);
+    toast('写真API では、端末によってはシャッター音が鳴ることがあります。', 5000);
     state.settings.photoNoticeShown = true;
     saveSettings();
   }
@@ -380,8 +391,9 @@ async function shoot() {
     else if (state.settings.mode === 'stack') await shootStack();
     else await shootPhotoApi();
   } catch (err) {
+    console.error(err);
     setBusy(false);
-    toast(`撮影できませんでした。${err?.message ?? err}`, 3500);
+    toast('撮影できませんでした。もう一度お試しください。', 3500);
   }
 }
 
@@ -431,7 +443,7 @@ async function shootStack() {
   setBusy(false);
 
   if (result.scaleReduced) {
-    toast('解像度が高いため、2 倍にする処理は行いませんでした');
+    toast('解像度が高いため、今回は 2 倍にする処理を省きました');
   }
   showResult(blob, [
     `${result.width}×${result.height}`,
@@ -442,7 +454,7 @@ async function shootStack() {
 
 async function shootPhotoApi() {
   if (!isPhotoModeAvailable()) {
-    toast('この端末の Safari は写真API に対応していません', 3000);
+    toast('この端末のブラウザは写真API に対応していません', 3000);
     return;
   }
   setBusy(true, '撮影しています');
@@ -458,8 +470,9 @@ async function shootPhotoApi() {
       `${Math.round(performance.now() - started)} ミリ秒`,
     ]);
   } catch (err) {
+    console.error(err);
     setBusy(false);
-    toast(`写真API で撮影できませんでした。${err?.message ?? err}`, 4000);
+    toast('写真API で撮影できませんでした。もう一度お試しください。', 4000);
   } finally {
     // 撮影のあとに映像が止まることがあるため、止まっていれば立て直す
     ensurePreviewRunning();
@@ -635,7 +648,7 @@ function bindSettings() {
 
   $('zoomInput').addEventListener('input', (event) => {
     const value = Number(event.target.value);
-    $('zoomValue').textContent = `${value.toFixed(1)}倍`;
+    $('zoomValue').textContent = `${value.toFixed(1)} 倍`;
     if (state.track) applyZoom(value);
   });
   $('torchInput').addEventListener('change', async (event) => {
@@ -645,7 +658,7 @@ function bindSettings() {
   });
   $('diagLink').addEventListener('click', () => {
     const ok = window.confirm(
-      '端末の性能を調べるページを開きます。\n'
+      '端末チェックのページを開きます。\n'
       + 'このページから離れるため、戻るときにカメラの許可を求められることがあります。',
     );
     if (ok) window.location.href = './diag.html';
@@ -710,8 +723,8 @@ async function boot() {
   el.buildInfo.textContent = `版 ${APP_VERSION}`;
   state.storageAvailable = checkStorage();
   el.storageInfo.textContent = state.storageAvailable
-    ? '設定の保存: この端末では保存できます'
-    : '設定の保存: この端末では保存できません。起動のたびに初期値に戻ります。';
+    ? '設定の保存：この端末では設定を保存できます'
+    : '設定の保存：この端末では設定を保存できません。起動のたびに初期値に戻ります。';
 
   loadSettings();
   bindSettings();

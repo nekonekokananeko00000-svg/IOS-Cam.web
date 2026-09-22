@@ -60,21 +60,21 @@
 
     <div class="row">
       <label for="framesInput">合成する枚数
-        <span class="hint">多いほどノイズが減ります。止まっているものを撮るときに向きます。</span>
+        <span class="hint">多いほどノイズが減ります。止まっているものを撮るときに向いています。</span>
       </label>
       <span class="control"><input type="range" id="framesInput" min="2" max="48" step="1" value="8"> <span id="framesValue">8</span></span>
     </div>
 
     <div class="row">
       <label for="highFpsInput">連写を速くする
-        <span class="hint">合成中だけ毎秒 60 コマを要求します。対応していない端末では何も起きません。</span>
+        <span class="hint">合成中だけ毎秒 60 コマを要求します。対応していない端末では、この設定は無視されます。</span>
       </label>
       <input type="checkbox" id="highFpsInput">
     </div>
 
     <div class="row">
       <label for="drizzleInput">解像度を 2 倍にする
-        <span class="hint">手ぶれによるわずかなずれを解像度に変えます。処理が重く、静止したものにだけ効きます。</span>
+        <span class="hint">手ぶれによるわずかなずれを利用して、細かい部分を描き起こします。処理が重く、止まっているものにだけ効果があります。</span>
       </label>
       <input type="checkbox" id="drizzleInput">
     </div>
@@ -88,12 +88,12 @@
 
     <div class="row">
       <label for="resolutionSelect">解像度
-        <span class="hint">端末が対応している近い値に調整されます。</span>
+        <span class="hint">端末が対応している値のうち、いちばん近いものに調整されます。</span>
       </label>
       <select id="resolutionSelect">
         <option value="auto">自動（いちばん大きい解像度）</option>
         <option value="3840x2160">4K 相当・16:9（約 830 万画素）</option>
-        <option value="1920x1440">4:3（約 280 万画素）</option>
+        <option value="1920x1440">1920×1440・4:3（約 280 万画素）</option>
         <option value="1920x1080">フル HD 相当・16:9（約 210 万画素）</option>
         <option value="1280x720">HD 相当・16:9（約 92 万画素）</option>
       </select>
@@ -101,7 +101,7 @@
 
     <div class="row" id="zoomRow" hidden>
       <label for="zoomInput">ズーム</label>
-      <span class="control"><input type="range" id="zoomInput" min="1" max="5" step="0.1" value="1"> <span id="zoomValue">1.0倍</span></span>
+      <span class="control"><input type="range" id="zoomInput" min="1" max="5" step="0.1" value="1"> <span id="zoomValue">1.0 倍</span></span>
     </div>
 
     <div class="row" id="torchRow" hidden>
@@ -129,9 +129,9 @@
       <label>カメラの許可
         <span class="hint" id="permissionInfo">確認中です。</span>
         <span class="hint">
-          起動のたびに許可を求められる場合は、設定アプリの「アプリ」から Safari を開き、
-          「カメラ」を「許可」にすると求められなくなることがあります。
-          すべてのサイトに許可が下りる設定です。
+          起動のたびに許可を聞かれる場合は、設定アプリの「アプリ」から Safari を開き、
+          「カメラ」を「許可」に変えると聞かれなくなることがあります。
+          ただし、この設定はすべてのサイトに適用されます。
         </span>
       </label>
     </div>
@@ -141,7 +141,7 @@
         <span class="hint" id="buildInfo">読み込み中です。</span>
         <span class="hint" id="storageInfo"></span>
       </label>
-      <button class="small" id="diagLink">端末の性能を調べる</button>
+      <button class="small" id="diagLink">端末チェックを開く</button>
     </div>
 
     <div class="row notice">
@@ -169,7 +169,7 @@
     <h1>静音カメラ</h1>
     <p>
       カメラの映像から 1 コマを取り出して保存します。
-      写真の撮影機能を使わないため、シャッター音は鳴りません。
+      通常の撮影では写真の撮影機能を使わないため、シャッター音は鳴りません。
     </p>
     <ul>
       <li>撮影した画像は端末の中だけで処理し、どこにも送信しません。</li>
